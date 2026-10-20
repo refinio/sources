@@ -71,3 +71,44 @@ fn native_windows_paths_support_recursive_release_and_child_execution() {
     );
     assert_eq!(f.git(&dev, &["rev-parse", "HEAD"]), pin);
 }
+
+#[test]
+fn removing_windows_directory_links_preserves_targets_and_repairs_dangling_links() {
+    use std::os::windows::fs::{symlink_dir, symlink_file};
+
+    let f = Fixture::new();
+    let upstream = f.repo("upstream");
+    let dev = f.repo("dev");
+    let url = url::Url::from_file_path(upstream).unwrap().to_string();
+    f.git(&dev, &["remote", "add", "origin", &url]);
+    f.configure(json!({"a":{"url":url}}), json!({"a":dev}));
+    let links = f.app.join("sources");
+    std::fs::create_dir(&links).unwrap();
+    let external = f.root.join("external");
+    std::fs::create_dir(&external).unwrap();
+    let valuable = external.join("valuable.txt");
+    std::fs::write(&valuable, b"keep\n").unwrap();
+    symlink_dir(&external, links.join("obsolete-dir")).unwrap();
+    symlink_file(&valuable, links.join("obsolete-file")).unwrap();
+    symlink_dir(f.root.join("missing"), links.join("obsolete-dangling")).unwrap();
+    success(f.cli().arg("dev").output().unwrap());
+    for name in ["obsolete-dir", "obsolete-file", "obsolete-dangling"] {
+        assert!(std::fs::symlink_metadata(links.join(name)).is_err());
+    }
+    assert_eq!(std::fs::read(&valuable).unwrap(), b"keep\n");
+
+    std::fs::remove_dir(links.join("a")).unwrap();
+    symlink_dir(f.root.join("missing"), links.join("a")).unwrap();
+    success(f.cli().arg("dev").output().unwrap());
+    assert_eq!(
+        links.join("a").canonicalize().unwrap(),
+        dev.canonicalize().unwrap()
+    );
+    let disposable_link = f.app.join(".sources/disposable-link");
+    symlink_dir(&external, &disposable_link).unwrap();
+    success(f.cli().arg("lock").output().unwrap());
+    success(f.cli().args(["release", "--clean"]).output().unwrap());
+    assert!(std::fs::symlink_metadata(disposable_link).is_err());
+    assert_eq!(std::fs::read(&valuable).unwrap(), b"keep\n");
+    assert!(dev.join("tracked.txt").exists());
+}

@@ -38,6 +38,19 @@ fn link_directory(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_dir(target, link)
 }
 
+fn unlink(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if fs::symlink_metadata(path)?.file_type().is_symlink_dir() {
+            // Windows directory links need RemoveDirectory, even when dangling.
+            // This is nonrecursive and removes the link object, never its target.
+            return fs::remove_dir(path);
+        }
+    }
+    fs::remove_file(path)
+}
+
 fn activate_links(project: &Project, targets: &BTreeMap<String, PathBuf>) -> Result<()> {
     fs::create_dir_all(project.links())?;
     for entry in fs::read_dir(project.links())? {
@@ -49,7 +62,7 @@ fn activate_links(project: &Project, targets: &BTreeMap<String, PathBuf>) -> Res
                 .keys()
                 .any(|name| entry.file_name() == name.as_str())
         {
-            fs::remove_file(entry.path()).with_context(|| {
+            unlink(&entry.path()).with_context(|| {
                 format!(
                     "cannot remove stale workspace link {}",
                     entry.path().display()
@@ -66,7 +79,8 @@ fn activate_links(project: &Project, targets: &BTreeMap<String, PathBuf>) -> Res
             if link.canonicalize().is_ok_and(|actual| actual == target) {
                 continue;
             }
-            fs::remove_file(&link)?;
+            unlink(&link)
+                .with_context(|| format!("cannot replace workspace link {}", link.display()))?;
         }
         link_directory(&target, &link).with_context(|| format!("cannot link {} to {}; check directory permissions and rerun the command; on Windows enable Developer Mode or run with symlink privileges", link.display(), target.display()))?;
     }
@@ -107,7 +121,7 @@ fn remove_managed(path: &Path) -> Result<()> {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
             fs::remove_dir_all(path)?
         }
-        Ok(_) => fs::remove_file(path)?,
+        Ok(_) => unlink(path)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }

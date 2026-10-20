@@ -26,7 +26,10 @@ fn development_and_release_switch_stable_paths_without_changing_pins_or_developm
     success(f.cli().arg("setup").output().unwrap());
     success(f.cli().arg("dev").output().unwrap());
     let workspace = f.app.join("sources/a");
-    assert_eq!(workspace.canonicalize().unwrap(), dev_a);
+    assert_eq!(
+        workspace.canonicalize().unwrap(),
+        dev_a.canonicalize().unwrap()
+    );
     success(f.cli().args(["lock", "--check"]).output().unwrap());
     let locked = std::fs::read(f.app.join(".sources.lock")).unwrap();
     let dev_a_head = f.git(&dev_a, &["rev-parse", "HEAD"]);
@@ -35,7 +38,7 @@ fn development_and_release_switch_stable_paths_without_changing_pins_or_developm
     success(f.cli().arg("release").output().unwrap());
     assert_eq!(
         workspace.canonicalize().unwrap(),
-        f.app.join(".sources/checkouts/a")
+        f.app.join(".sources/checkouts/a").canonicalize().unwrap()
     );
     assert_eq!(
         std::fs::read_to_string(workspace.join("tracked.txt")).unwrap(),
@@ -48,7 +51,10 @@ fn development_and_release_switch_stable_paths_without_changing_pins_or_developm
         "retain generated output\n"
     );
     success(f.cli().arg("dev").output().unwrap());
-    assert_eq!(workspace.canonicalize().unwrap(), dev_a);
+    assert_eq!(
+        workspace.canonicalize().unwrap(),
+        dev_a.canonicalize().unwrap()
+    );
     assert_eq!(
         std::fs::read_to_string(dev_a.join("tracked.txt")).unwrap(),
         "development edit\n"
