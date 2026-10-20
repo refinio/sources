@@ -18,7 +18,7 @@ archive = f"sources-{target}" + (".zip" if windows else ".tar.gz")
 if not (artifacts / archive).is_file():
     raise SystemExit(f"Missing native archive: {archive}")
 script = artifacts / ("sources-installer.ps1" if windows else "sources-installer.sh")
-command = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)] if windows else ["sh", str(script)]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)] if windows else ["sh", str(script)]
 requests = []
 
 
