@@ -1,6 +1,6 @@
 # Sources CLI specification
 
-Status: agreed design for implementation. This document specifies the proposed tool; the commands are not yet implemented.
+Status: behavior contract for the experimental first version.
 
 ## Purpose and scope
 
@@ -28,7 +28,7 @@ Search the current directory and its parents for the nearest `.sources.conf`, fo
 
 Support `--help`, `--version`, and `sources status --json`. JSON status has a versioned top-level schema and includes the same source state and diagnostics as human-readable status. Write command results to stdout and warnings and errors to stderr. Disable color and progress decoration for non-terminal output. Commands never require interactive input to proceed; errors suggest the exact command to retry or the configuration to edit.
 
-Exit with 0 on success, 1 for operational or validation failure, and 2 for invalid CLI syntax. `sources run` preserves the child's exit status once it starts. On Unix, child termination by a signal uses the conventional `128 + signal number` exit status. Forward interruption and termination to the supervised child process group and wait for it before releasing the project lock. Detached background jobs are outside that supervision guarantee. Windows uses native child exit behavior with best-effort interruption forwarding.
+Exit with 0 on success, 1 for operational or validation failure, and 2 for invalid CLI syntax. `sources run` preserves the child's exit status once it starts. On Unix, child termination by a signal uses the conventional `128 + signal number` exit status. With an accessible controlling terminal, inherit the shell's process group and let the shell manage terminal ownership, pipelines, suspension, and continuation. Hold the project lock until the direct child exits. Interactive commands must wait for their own workers; workers left behind after that child exits are outside the lock and supervision guarantee. Without a controlling terminal, create a dedicated child process group, forward interruption and termination to that group, and wait for its lifetime before releasing the lock. Jobs that leave that group are outside supervision. Windows uses native child exit behavior with best-effort interruption forwarding.
 
 ## Core guarantees
 
@@ -307,7 +307,7 @@ Report missing and broken links, invalid managed checkouts, missing commits, una
 
 Resolve the named source's active workspace link and run the child command there. Refuse a missing link, unexpected target, invalid repository identity, or unknown source name.
 
-Execute the command and arguments directly, without implicit shell parsing. Users who need shell expressions can explicitly run a shell. Inherit environment, standard input, standard output, and standard error; forward termination signals appropriately.
+Execute the command and arguments directly, without implicit shell parsing. Users who need shell expressions can explicitly run a shell. Inherit environment, standard input, standard output, and standard error. On Unix, an accessible controlling terminal selects interactive execution even when standard streams are redirected or the job starts in the background. Keep the shell's process group and never change terminal foreground ownership. Terminal signals reach the shell job group naturally. Sources absorbs interactive `SIGINT` while waiting, so programmatic interruption must target the job group rather than the Sources PID. Forward `SIGTERM` explicitly sent to Sources to its direct child. Wait for the direct child and require interactive commands to await their own workers. Without a controlling terminal, supervise a dedicated child group and wait for the group, including remaining members after the direct child exits.
 
 Inspect source cleanliness before and after execution. Return the child's exit status when it ran, including when it left source changes. Failure to start the child is a tool error. No automatic mode switch, fetch, dependency installation, or lock update occurs.
 
@@ -317,7 +317,7 @@ Validate configuration, path safety, and relevant inputs before changing links o
 
 Inspect the state relevant to each command on the next invocation. Detect obvious breakage such as invalid Git roots, incomplete checkouts, broken links, or missing required submodule inputs. Error with the affected source and path and a concrete repair suggestion. `sources dev` repairs development links, `sources release` reapplies pins to reusable clones, `sources fetch` obtains missing inputs, and `sources release --clean` recreates broken managed contents. Commands performing the suggested repair may fix the corresponding missing or incomplete state instead of rejecting it first. Do not perform a full repository integrity audit on every invocation.
 
-Use one exclusive operating-system advisory lock per project at `.sources/project.lock`. All project commands acquire it before inspection or mutation, including `sources run` for its entire supervised child lifetime. `--help` and `--version` need no project lock. Fail immediately when the lock is busy; report the project and suggest retrying after the other command finishes. Do not wait indefinitely or support nested project operations inside `sources run`.
+Use one exclusive operating-system advisory lock per project at `.sources/project.lock`. All project commands acquire it before inspection or mutation, including `sources run` until its direct child exits in an interactive terminal context, or until its dedicated child group finishes without a controlling terminal. `--help` and `--version` need no project lock. Fail immediately when the lock is busy; report the project and suggest retrying after the other command finishes. Do not wait indefinitely or support nested project operations inside `sources run`.
 
 Use a lock held by an open file handle so process termination releases ownership. Do not treat the continued existence of the lock file as a live lock, and do not unlink or replace that file while an operation holds it. Creating the internal directory and lock file is permitted when bootstrapping a project. External editors and manual deletion of managed state are outside the lock's protection; users must not remove the lock file or managed directory during a running command.
 
@@ -454,4 +454,4 @@ Inspect fetched refs and object graphs to verify that shallow acquisition avoids
 
 ## Implementation boundary
 
-Implementation of version 1 in the standalone refinio/sources repository was authorized on 2026-10-20. This does not authorize migration of consuming workspaces or publication of release artifacts. Integrating the tool into this repository will require replacing existing external workspace paths and tracked symlink assumptions with its stable managed paths, and making the complete package dependency lock reproducible in that layout.
+Implementation of version 1 in the standalone refinio/sources repository was authorized on 2026-10-20. This does not authorize migration of consuming workspaces or publication of release artifacts. Integrating the tool into consuming workspaces requires replacing their external workspace paths and tracked symlink assumptions with stable managed paths, and making their package dependency locks reproducible in that layout.
