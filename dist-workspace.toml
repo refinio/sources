@@ -18,4 +18,5 @@ checksum = "sha256"
 unix-archive = ".tar.gz"
 windows-archive = ".zip"
 install-path = "CARGO_HOME"
+install-success-msg = "Sources installed. To install the agent skills, run: npx skills add refinio/sources"
 source-tarball = false
