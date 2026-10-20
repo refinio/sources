@@ -22,6 +22,9 @@ assert_cmd = "2.0"
 lto = "thin"
 strip = true
 
+[profile.dist]
+inherits = "release"
+
 [target."cfg(unix)".dependencies]
 libc = "0.2"
 signal-hook = "0.3"

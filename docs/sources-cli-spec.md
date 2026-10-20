@@ -1,6 +1,6 @@
 # Sources CLI specification
 
-Status: agreed design for implementation. This document specifies the proposed tool; the commands are not yet implemented.
+Status: behavior contract for the experimental first version.
 
 ## Purpose and scope
 
@@ -454,4 +454,4 @@ Inspect fetched refs and object graphs to verify that shallow acquisition avoids
 
 ## Implementation boundary
 
-Implementation of version 1 in the standalone refinio/sources repository was authorized on 2026-10-20. This does not authorize migration of consuming workspaces or publication of release artifacts. Integrating the tool into this repository will require replacing existing external workspace paths and tracked symlink assumptions with its stable managed paths, and making the complete package dependency lock reproducible in that layout.
+Implementation of version 1 in the standalone refinio/sources repository was authorized on 2026-10-20. This does not authorize migration of consuming workspaces or publication of release artifacts. Integrating the tool into consuming workspaces requires replacing their external workspace paths and tracked symlink assumptions with stable managed paths, and making their package dependency locks reproducible in that layout.

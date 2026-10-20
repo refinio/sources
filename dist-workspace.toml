@@ -1,0 +1,21 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.33.0"
+dist = true
+# Build artifacts explicitly. Ordinary pushes must never publish a release.
+ci = []
+hosting = ["github"]
+installers = ["shell", "powershell"]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+checksum = "sha256"
+unix-archive = ".tar.gz"
+windows-archive = ".zip"
+install-path = "CARGO_HOME"
+source-tarball = false

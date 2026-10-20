@@ -1,7 +1,159 @@
 # Sources
 
-A Rust CLI for selecting development checkouts or pinned release sources through stable local workspace links.
+`sources` selects development checkouts or exact release commits through stable workspace paths. Your package workspace keeps the same paths when switching between them. Sources invokes the installed Git executable and does not build packages or publish releases.
 
-The first version is under development. See [the specification](docs/sources-cli-spec.md) for commands and guarantees.
+Linux and macOS are supported. Native Windows is best effort. Use Git 2.39.5 or newer, with the SSH and credential setup your repositories require. The CLI is experimental and currently promises no backwards compatibility.
 
-Linux and macOS are supported targets. Windows support is best effort. Git must be installed.
+## Install
+
+No prebuilt release or public installer is available yet. From an authorized checkout, install the current version with a Rust toolchain:
+
+```sh
+cargo install --path . --locked
+sources --version
+```
+
+The repository pins Rust in `rust-toolchain.toml`. Rustup selects it automatically. Add Cargo's binary directory to your `PATH` if needed. Git must also be on `PATH`.
+
+The prepared distribution configuration builds Linux x86-64, macOS Intel and Apple silicon, and best-effort Windows x86-64 binaries. It generates shell and PowerShell installers for installation without Rust. Their download commands will become usable only after the first release is explicitly published. This repository is currently private, so anonymous GitHub download commands would not work.
+
+## Configure a project
+
+Run this from the consuming project's root:
+
+```sh
+sources setup
+```
+
+Setup creates missing configuration and ignore entries without downloading repositories. Existing configuration stays intact. Edit `.sources.conf` to declare upstreams and the workspace link directory. All configuration files contain UTF-8 JSON.
+
+```json
+{
+  "version": 1,
+  "directory": "./sources",
+  "sources": {
+    "library": {
+      "url": "https://github.com/your-org/library.git"
+    }
+  }
+}
+```
+
+Replace the example URL. Each source name is one directory name. For example, `library` appears at `sources/library`. Point your Cargo, pnpm, or other workspace configuration at these stable paths.
+
+Edit the ignored `.sources.local.conf` to map source names to development checkouts:
+
+```json
+{
+  "sources": {
+    "library": "../library"
+  }
+}
+```
+
+Paths resolve against the project root and may be absolute. Paths are literal: Sources does not expand environment variables or shell expressions. A development checkout must have a remote matching its configured upstream. Forks work when an `upstream` remote matches. HTTPS and SSH spellings of the same repository are equivalent.
+
+```sh
+sources check
+sources dev
+sources status
+sources run library -- cargo test
+```
+
+Sources discovers the nearest `.sources.conf` in the current directory or a parent. Use `sources -C /path/to/project status` to start discovery elsewhere.
+
+Commit `.sources.conf` and `.sources.lock`. Setup adds `.sources/`, `.sources.local.conf`, and the generated workspace link directory to `.gitignore`.
+
+## Pin and select release inputs
+
+Commit and push your source changes, then capture the development commits:
+
+```sh
+sources lock --check
+git diff -- .sources.lock
+```
+
+The generated lock is JSON with `version: 1` and a `sources` object mapping source names to full commit object IDs. Review and commit it with the consuming app changes. A lock captures committed revisions only. Dirty development checkouts produce warnings; their uncommitted edits are excluded.
+
+To update one pin, replace `<commit>` with a full or locally unambiguous abbreviated commit ID:
+
+```sh
+sources lock library:<commit> --check
+sources release
+sources status
+```
+
+Only `lock` changes pins. Neither mode switching nor fetching rewrites the lock. Normal release switching retains non-conflicting ignored artifacts, so rebuild dependencies and outputs when needed.
+
+For a release build, start with a clean consuming app checkout and run:
+
+```sh
+sources release --clean
+sources status
+# Install dependencies, build, test, package, and sign using your normal tools.
+```
+
+`--clean` recreates managed source checkouts and discards all their contents, including source edits, untracked files, dependencies, and ignored outputs. It does not clean the consuming app's own outputs. Record the app commit and `.sources.lock` with release evidence.
+
+## Commands
+
+| Command | Behavior |
+| --- | --- |
+| `setup` | Create missing configuration, directories, and ignore entries. |
+| `check` | Validate all development mappings and repository identities locally. |
+| `dev` | Point workspace links at validated development checkouts. |
+| `lock [name:commit ...] [--check]` | Capture all development HEADs or update selected pins atomically. `--check` caches the proposed managed inputs before writing. |
+| `fetch [name ...]` | Contact selected upstreams and cache locked revisions, or default-branch tips for unpinned sources. Preserve existing checkout HEADs and links. |
+| `check-release` | Validate a complete lock and cache missing release inputs without activating them. |
+| `release` | Activate locked commits and recursive submodules in managed checkouts, then select their links. |
+| `release --clean` | Recreate disposable managed checkouts from upstream and activate the lock. |
+| `release --offline` | Activate complete cached inputs with no tool-initiated network access. Cannot combine with `--clean`. |
+| `status [--json]` | Inspect links, mode, commits, changes, and local cache readiness. JSON has a versioned top-level schema. |
+| `run name -- command [args ...]` | Execute directly in the named active source, inherit standard streams, and report changes before and after. |
+
+Use `sources --help` or `sources <command> --help` for syntax. Results go to stdout; warnings and errors go to stderr. Exit codes are `0` for success, `1` for operational or validation failure, and `2` for invalid syntax. Once a child starts, `run` preserves its exit status. Shell expressions require an explicit shell, such as `sources run library -- sh -c 'build && test'`.
+
+`check`, `dev`, `status`, and ordinary `lock` do not fetch. `run` does not fetch itself, though its child may use the network. Online release and readiness commands can reuse cached objects. `fetch` contacts every selected upstream even when cached.
+
+## Fetching and ownership
+
+Managed acquisition prefers depth-one fetches of required commits with complete file contents. It recursively acquires submodules at recorded gitlink commits. Sources does not use partial clones, blob filtering, sparse checkouts, moving submodule branches, or `git pull`. If a server requires broader history, Sources reports the compatibility fallback. Development commands inspect existing submodules without updating them.
+
+A commit in a valid managed cache with the expected upstream is enough for pin validation. This does not prove that the remote still serves the commit, approve the source, or establish that tests passed. A clean release obtains inputs from upstream again. Offline release needs the complete parent and recursive submodule inputs already cached.
+
+Everything under `.sources/` is disposable. Keep valuable work in development checkouts elsewhere. Links directly inside the configured workspace link directory are replaceable, including stale source links. Sources removes link objects without deleting their targets. It refuses ordinary files or directories at required link locations. Linux and macOS use directory symlinks; Windows may use junctions.
+
+Sources never resets, stashes, cleans, switches branches in, or deletes development checkouts. Normal release activation refuses managed source edits and checkout conflicts. It preserves ignored artifacts unless they conflict with the requested checkout.
+
+## Repair interrupted work
+
+Multi-source activation is not atomic. An interruption may leave partial checkouts or links. Sources reports obvious breakage on the next relevant command and suggests a repair:
+
+- `sources dev` restores development links.
+- `sources fetch` caches missing inputs.
+- `sources release` reapplies pins when managed clones remain usable.
+- `sources release --clean` recreates broken managed contents, discarding their files.
+
+There is no rollback journal or saved mode flag. `status` derives `dev`, `release`, `mixed`, or `unconfigured` from actual links. Links in release mode can still have commit or submodule mismatches, which status reports separately.
+
+All project commands take one exclusive advisory lock at `.sources/project.lock`. A busy lock fails immediately. On Unix, `run` with an accessible controlling terminal keeps the shell's process group, including in pipelines, with redirected streams, or in background jobs. The shell controls terminal ownership and job suspension. Sources holds the lock until its direct child exits. Terminal interrupts reach the shell job group naturally; Sources absorbs its own interactive `SIGINT`, so programmatic interruption must target the job group. A `SIGTERM` sent explicitly to Sources is forwarded to its direct child. Interactive commands must wait for their own workers; workers left behind afterward are outside the lock and supervision guarantee.
+
+Without a controlling terminal, `run` uses a dedicated child process group, forwards interruption and termination to it, and holds the lock until that group finishes. Jobs that leave the group are outside supervision. Process termination releases the lock; do not remove the lock file or `.sources/` while an operation is running.
+
+## Development
+
+The acceptance tests invoke the public CLI with real temporary Git repositories, filesystem links, and child processes. They isolate Git configuration and use loopback Git and HTTP fixtures. Python 3 is needed for the dumb-HTTP fixture. Failed test fixtures remain on disk, with their paths printed for inspection.
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+```
+
+CI builds checksum-pinned Git 2.56.0 on Linux and macOS and also tests Git 2.39.5 on Linux. Native macOS tests cover Intel and Apple silicon. Windows CI uses the runner's Git and is allowed to fail. These jobs also build archives and smoke-test the extracted executable. Rust and Cargo dependencies are pinned by `rust-toolchain.toml` and `Cargo.lock`; hosted runner system libraries still come from their OS images.
+
+The manually dispatched **Prepare release artifacts** workflow builds archives, checksums, and shell/PowerShell installers with cargo-dist 0.33.0. It omits the Windows installer if the best-effort Windows build fails. It stores private workflow artifacts for review. It has read-only repository permissions and does not create a release, push tags, or upload release assets. Ordinary pushes run CI only.
+
+Before a first publication, review the candidate artifacts and installer target URLs, arrange an authorized distribution destination, and explicitly approve publication. An installer requires the matching versioned archives at that destination. Windows is best effort; do not advertise an installer target whose archive failed to build. No license has been selected for distribution yet.
+
+See [the specification](docs/sources-cli-spec.md) for the full behavior contract and [.agents/refactor-policy.md](.agents/refactor-policy.md) for the compatibility policy.

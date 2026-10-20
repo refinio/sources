@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux / baseline Git
+            os: ubuntu-24.04
+            git: 2.56.0
+            target: x86_64-unknown-linux-gnu
+            experimental: false
+          - label: Linux / minimum Git
+            os: ubuntu-24.04
+            git: 2.39.5
+            target: x86_64-unknown-linux-gnu
+            experimental: false
+          - label: macOS / Apple silicon
+            os: macos-15
+            git: 2.56.0
+            target: aarch64-apple-darwin
+            experimental: false
+          - label: macOS / Intel
+            os: macos-15-intel
+            git: 2.56.0
+            target: x86_64-apple-darwin
+            experimental: false
+          - label: Windows / best effort
+            os: windows-2022
+            git: bundled
+            target: x86_64-pc-windows-msvc
+            experimental: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
+      - name: Restore pinned Git
+        if: runner.os != 'Windows'
+        id: git-cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4
+        with:
+          path: ${{ runner.temp }}/sources-git-${{ matrix.git }}/install
+          key: sources-git-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.git }}-${{ hashFiles('.github/scripts/build-git.sh') }}
+      - name: Install Git build prerequisites
+        if: runner.os == 'Linux' && steps.git-cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libcurl4-openssl-dev libexpat1-dev zlib1g-dev
+      - name: Build pinned Git
+        if: runner.os != 'Windows' && steps.git-cache.outputs.cache-hit != 'true'
+        run: bash .github/scripts/build-git.sh '${{ matrix.git }}'
+      - name: Cache built Git before command tests
+        if: runner.os != 'Windows' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4
+        with:
+          path: ${{ runner.temp }}/sources-git-${{ matrix.git }}/install
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
+      - name: Select pinned Git
+        if: runner.os != 'Windows'
+        run: printf '%s\n' "$RUNNER_TEMP/sources-git-${{ matrix.git }}/install/bin" >> "$GITHUB_PATH"
+      - name: Record tools
+        run: |
+          rustc --version
+          git --version
+          python3 --version
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked -- --nocapture
+        timeout-minutes: 3
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+      - name: Install pinned cargo-dist
+        run: python3 .github/scripts/install-dist.py "$RUNNER_TEMP/sources-dist"
+      - name: Validate distribution plan
+        run: dist plan
+      - name: Package executable
+        run: dist build --artifacts=local --target '${{ matrix.target }}'
+      - name: Smoke test packaged executable
+        if: runner.os != 'Windows'
+        run: python3 .github/scripts/smoke-package.py 'target/distrib/sources-${{ matrix.target }}.tar.gz'
+      - name: Smoke test packaged Windows executable
+        if: runner.os == 'Windows'
+        run: python3 .github/scripts/smoke-package.py 'target/distrib/sources-${{ matrix.target }}.zip'
+      - name: Generate and parse installers
+        if: runner.os == 'Linux' && matrix.git == '2.56.0'
+        run: |
+          dist build --artifacts=global
+          sh -n target/distrib/sources-installer.sh
+      - name: Preserve failed fixtures
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: failed-fixtures-${{ matrix.os }}-${{ matrix.git }}
+          path: ${{ runner.temp }}/sources-test-*
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 7
