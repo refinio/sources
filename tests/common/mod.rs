@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::process::{Command, Output};
 use tempfile::TempDir;
 
@@ -58,6 +59,7 @@ impl Fixture {
     }
 
     pub fn git(&self, cwd: &Path, args: &[&str]) -> String {
+        use std::io::Write;
         let output = self
             .command("git")
             .current_dir(cwd)
@@ -65,11 +67,26 @@ impl Fixture {
             .args(args)
             .output()
             .unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let args = args
+            .iter()
+            .map(|arg| sources::git::redact(arg))
+            .collect::<Vec<_>>();
+        let stderr = sources::git::redact(&String::from_utf8_lossy(&output.stderr));
+        let mut transcript = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.join("git-commands.jsonl"))
+            .unwrap();
+        serde_json::to_writer(
+            &mut transcript,
+            &serde_json::json!({
+                "directory": cwd.to_string_lossy(), "arguments": args,
+                "status": output.status.code(), "stderr": stderr,
+            }),
+        )
+        .unwrap();
+        transcript.write_all(b"\n").unwrap();
+        assert!(output.status.success(), "git {args:?}: {}", stderr);
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
 
@@ -101,6 +118,66 @@ impl Fixture {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    pub fn server(&self, repository: &str) -> GitServer {
+        use std::net::{SocketAddr, TcpListener, TcpStream};
+        use std::time::{Duration, Instant};
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let log = std::fs::File::create(self.root.join(format!("daemon-{port}.log"))).unwrap();
+        let exec_path = self.git(&self.root, &["--exec-path"]);
+        let daemon = Path::new(&exec_path).join(if cfg!(windows) {
+            "git-daemon.exe"
+        } else {
+            "git-daemon"
+        });
+        let mut child = self
+            .command(daemon)
+            .args([
+                "--verbose",
+                "--reuseaddr",
+                "--export-all",
+                "--listen=127.0.0.1",
+            ])
+            .arg(format!("--port={port}"))
+            .arg(format!("--base-path={}", self.root.display()))
+            .arg(&self.root)
+            .stdout(std::process::Stdio::null())
+            .stderr(log)
+            .spawn()
+            .unwrap();
+        let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "git daemon exited before listening"
+            );
+            if TcpStream::connect_timeout(&address, Duration::from_millis(20)).is_ok() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "git daemon did not listen");
+            std::thread::yield_now();
+        }
+        GitServer {
+            child,
+            url: format!("git://127.0.0.1:{port}/{repository}"),
+        }
+    }
+}
+
+pub struct GitServer {
+    child: Child,
+    pub url: String,
+}
+impl Drop for GitServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

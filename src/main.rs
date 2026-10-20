@@ -4,6 +4,8 @@ use sources::config::{self, CONFIG};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
+mod commands;
+
 #[derive(Parser)]
 #[command(
     version,
@@ -23,6 +25,16 @@ enum Commands {
     Setup,
     /// Validate development checkouts without downloading or changing sources
     Check,
+    /// Cache required revisions without activating them
+    Fetch { names: Vec<String> },
+    /// Check and cache all locked release inputs without activation
+    CheckRelease,
+    /// Capture development HEADs or update selected source pins
+    Lock {
+        pins: Vec<String>,
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 fn project_lock(root: &Path) -> Result<File> {
@@ -76,6 +88,16 @@ fn execute(cli: Cli) -> Result<i32> {
                 }
             }
             ensure!(errors.is_empty(), "{}", errors.join("\n"));
+        }
+        command => {
+            let project = config::Project::load(root)?;
+            project.validate()?;
+            match command {
+                Commands::Fetch { names } => commands::fetch(&project, &names)?,
+                Commands::CheckRelease => commands::check_release(&project)?,
+                Commands::Lock { pins, check } => commands::lock(&project, &pins, check)?,
+                _ => unreachable!(),
+            }
         }
     }
     Ok(0)

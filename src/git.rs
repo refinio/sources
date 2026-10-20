@@ -13,14 +13,34 @@ pub struct Change {
     pub status: String,
 }
 
+#[derive(Debug)]
+pub struct AmbiguousCommitId(pub String);
+
+impl std::fmt::Display for AmbiguousCommitId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ambiguous object ID {}", self.0)
+    }
+}
+
+impl std::error::Error for AmbiguousCommitId {}
+
 pub struct Git {
     path: PathBuf,
+    git_dir: Option<PathBuf>,
 }
 
 impl Git {
     pub fn at(path: &Path) -> Self {
         Self {
             path: path.to_owned(),
+            git_dir: None,
+        }
+    }
+
+    pub(crate) fn for_git_dir(path: &Path) -> Self {
+        Self {
+            path: path.to_owned(),
+            git_dir: Some(path.to_owned()),
         }
     }
 
@@ -192,20 +212,35 @@ impl Git {
     }
 
     pub fn resolve_commit(&self, input: &str) -> Result<String> {
-        if input.len() < 4
-            || input.len() > 64
-            || !input.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            bail!("commit must be a full or unambiguous abbreviated hexadecimal object ID");
-        }
-        let oid = self.text(&["rev-parse", "--verify", "--end-of-options", input])?;
+        let oid = self.resolve_object(input)?;
         if self.text(&["cat-file", "-t", &oid])? != "commit" {
             bail!("{input} does not identify a commit object");
         }
         Ok(oid)
     }
 
-    fn text(&self, args: &[&str]) -> Result<String> {
+    pub fn resolve_object(&self, input: &str) -> Result<String> {
+        if input.len() < 4
+            || input.len() > 64
+            || !input.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            bail!("commit must be a full or unambiguous abbreviated hexadecimal object ID");
+        }
+        let matches = self.text(&[
+            "rev-parse",
+            &format!("--disambiguate={}", input.to_ascii_lowercase()),
+        ])?;
+        if matches.lines().count() > 1 {
+            return Err(AmbiguousCommitId(input.to_owned()).into());
+        }
+        matches
+            .lines()
+            .next()
+            .map(str::to_owned)
+            .with_context(|| format!("{input} does not identify a locally available object"))
+    }
+
+    pub(crate) fn text(&self, args: &[&str]) -> Result<String> {
         let output = self.checked(args)?;
         Ok(String::from_utf8(output.stdout)
             .context("Git returned non-UTF-8 output")?
@@ -213,7 +248,7 @@ impl Git {
             .to_owned())
     }
 
-    fn checked(&self, args: &[&str]) -> Result<Output> {
+    pub(crate) fn checked(&self, args: &[&str]) -> Result<Output> {
         let output = self.output(args)?;
         if !output.status.success() {
             bail!(
@@ -226,7 +261,15 @@ impl Git {
         Ok(output)
     }
 
-    fn output(&self, args: &[impl AsRef<OsStr>]) -> Result<Output> {
+    pub(crate) fn output(&self, args: &[impl AsRef<OsStr>]) -> Result<Output> {
+        self.command_output(args, false)
+    }
+
+    pub(crate) fn network_output(&self, args: &[impl AsRef<OsStr>]) -> Result<Output> {
+        self.command_output(args, true)
+    }
+
+    fn command_output(&self, args: &[impl AsRef<OsStr>], network: bool) -> Result<Output> {
         let mut command = Command::new("git");
         command.current_dir(&self.path);
         for name in [
@@ -252,7 +295,13 @@ impl Git {
             .env("GIT_NO_LAZY_FETCH", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("LC_ALL", "C");
-        command.args(["-c", "protocol.allow=never"]).args(args);
+        if !network {
+            command.args(["-c", "protocol.allow=never"]);
+        }
+        if let Some(git_dir) = &self.git_dir {
+            command.arg("--git-dir").arg(git_dir);
+        }
+        command.args(args);
         command.output().with_context(|| {
             format!(
                 "cannot run Git at {}; install Git and verify the checkout path",
