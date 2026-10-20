@@ -49,8 +49,9 @@ impl Git {
             .path
             .canonicalize()
             .with_context(|| format!("checkout does not exist: {}", self.path.display()))?;
-        let actual = self.text(&["rev-parse", "--show-toplevel"])?;
-        let actual = Path::new(&actual).canonicalize()?;
+        let actual = self.checked(&["rev-parse", "--show-toplevel"])?;
+        let actual = path_from_bytes(actual.stdout.strip_suffix(b"\n").unwrap_or(&actual.stdout));
+        let actual = actual.canonicalize()?;
         if actual != root {
             bail!("{} is not a Git checkout root", self.path.display());
         }
@@ -68,8 +69,11 @@ impl Git {
                     "managed checkout must be an ordinary clone, not a link or linked worktree; rerun sources release --clean"
                 );
             }
-            let common = self.text(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-            if Path::new(&common).canonicalize()? != gitdir.canonicalize()? {
+            let common =
+                self.checked(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+            let common =
+                path_from_bytes(common.stdout.strip_suffix(b"\n").unwrap_or(&common.stdout));
+            if common.canonicalize()? != gitdir.canonicalize()? {
                 bail!(
                     "managed Git metadata is outside the checkout; rerun sources release --clean"
                 );
@@ -109,7 +113,10 @@ impl Git {
             if !output.status.success() {
                 continue;
             }
-            for url in String::from_utf8_lossy(&output.stdout).lines() {
+            let urls = std::str::from_utf8(&output.stdout).context(
+                "Git returned a non-UTF-8 remote URL; configure a UTF-8 path alias or a percent-encoded file URL",
+            )?;
+            for url in urls.lines() {
                 let local = local_url_path(url).map(|path| self.path.join(path));
                 let identity = match local {
                     Some(path) => local_identity(&path),
@@ -413,5 +420,7 @@ fn local_identity(path: &Path) -> Result<String> {
         std::env::current_dir()?.join(path)
     };
     let absolute = crate::config::upstream_path(&absolute)?;
-    Ok(format!("file:{}", absolute.display()))
+    Ok(Url::from_file_path(&absolute)
+        .map_err(|()| anyhow::anyhow!("cannot represent repository path as a file URL"))?
+        .to_string())
 }
