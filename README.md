@@ -6,16 +6,41 @@ Linux and macOS are supported. Native Windows is best effort. Use Git 2.39.5 or 
 
 ## Install
 
-No prebuilt release or public installer is available yet. From an authorized checkout, install the current version with a Rust toolchain:
+Install the latest stable GitHub Release on Linux x86-64 or macOS Intel/Apple silicon:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/refinio/sources/releases/latest/download/sources-installer.sh | sh
+```
+
+On Windows x86-64, run in PowerShell:
+
+```powershell
+irm https://github.com/refinio/sources/releases/latest/download/sources-installer.ps1 | iex
+```
+
+The installers select the archive for your computer and install to Cargo's binary directory without requiring Rust or the GitHub CLI. SHA-256 checksums are published with the archives. The shell installer verifies them when `sha256sum` is available; PowerShell does not verify them automatically. Git must be on `PATH`. Follow the printed `PATH` instructions if needed. Use a release's versioned installer URL instead of `latest/download` to select an exact version or prerelease.
+
+These download commands require a published release whose build workflow has finished. Before the first release, build from a checkout with Rust:
 
 ```sh
 cargo install --path . --locked
 sources --version
 ```
 
-The repository pins Rust in `rust-toolchain.toml`. Rustup selects it automatically. Add Cargo's binary directory to your `PATH` if needed. Git must also be on `PATH`.
+The repository pins Rust in `rust-toolchain.toml`. Rustup selects it automatically.
 
-The prepared distribution configuration builds Linux x86-64, macOS Intel and Apple silicon, and best-effort Windows x86-64 binaries. It generates shell and PowerShell installers for installation without Rust. Their download commands will become usable only after the first release is explicitly published. This repository is currently private, so anonymous GitHub download commands would not work.
+## Agent skills
+
+After a successful binary installation, the installer prints this optional next step:
+
+```sh
+npx skills add refinio/sources
+```
+
+Choose the skills and agents to install to. This command uses Node/npm and does not run automatically during CLI installation.
+
+- [sources-setup](skills/sources-setup/SKILL.md) applies to external local dependency or symlink requests and existing loose checkout references. It asks before adopting Sources, then guides setup and daily development.
+- [sources-release](skills/sources-release/SKILL.md) covers capturing or updating fixed pins, release/reproduction workflows, and returning to development.
 
 ## Configure a project
 
@@ -150,10 +175,16 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-CI builds checksum-pinned Git 2.56.0 on Linux and macOS and also tests Git 2.39.5 on Linux. Native macOS tests cover Intel and Apple silicon. Windows CI uses the runner's Git and is allowed to fail. These jobs also build archives and smoke-test the extracted executable. Rust and Cargo dependencies are pinned by `rust-toolchain.toml` and `Cargo.lock`; hosted runner system libraries still come from their OS images.
+CI builds checksum-pinned Git 2.56.0 on Linux and macOS and also tests Git 2.39.5 on Linux. Native macOS tests cover Intel and Apple silicon. Windows CI uses the runner's Git and is allowed to fail. Separate release-candidate jobs build archives and test extracted executables and installers. Rust and Cargo dependencies are pinned by `rust-toolchain.toml` and `Cargo.lock`; hosted runner system libraries still come from their OS images.
 
-The manually dispatched **Prepare release artifacts** workflow builds archives, checksums, and shell/PowerShell installers with cargo-dist 0.33.0. It omits the Windows installer if the best-effort Windows build fails. It stores private workflow artifacts for review. It has read-only repository permissions and does not create a release, push tags, or upload release assets. Ordinary pushes run CI only.
+## Publish a Sources release
 
-Before a first publication, review the candidate artifacts and installer target URLs, arrange an authorized distribution destination, and explicitly approve publication. An installer requires the matching versioned archives at that destination. Windows is best effort; do not advertise an installer target whose archive failed to build. No license has been selected for distribution yet.
+Update the Cargo package version and lockfile, commit the change, and manually publish a GitHub Release with the matching tag, such as `v0.1.0`. Publishing from the GitHub UI or `gh release create` triggers the release workflow, including when publishing a saved draft or prerelease. Saving an unpublished draft does not trigger a build.
+
+The workflow checks out that exact tag, checks its version, builds native Linux x86-64, macOS Intel/Apple silicon, and Windows x86-64 archives, and tests packaged executables and installers. After all four platform builds succeed, it uploads the archives, checksums, and generated shell/PowerShell installers to the existing release. Wait for the workflow to finish before sharing installation commands. The workflow does not create releases or push tags; normal pushes never publish assets.
+
+Pull requests and manual candidate runs verify distribution without uploading GitHub Release assets. cargo-dist 0.33.0, Rust, and Cargo dependencies are pinned. Windows runtime support remains best effort, while every advertised release archive must build and pass its installation checks.
+
+Sources is available under the [MIT license](LICENSE).
 
 See [the specification](docs/sources-cli-spec.md) for the full behavior contract and [.agents/refactor-policy.md](.agents/refactor-policy.md) for the compatibility policy.

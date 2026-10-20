@@ -10,16 +10,11 @@ required = [
     "x86_64-unknown-linux-gnu",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
 ]
-command = ["dist", "build", "--artifacts=global", "--installer=shell", "--output-format=json"]
-targets = list(required)
-windows = artifacts / "sources-x86_64-pc-windows-msvc.zip"
-if windows.is_file():
-    targets.append("x86_64-pc-windows-msvc")
-    command.append("--installer=powershell")
-else:
-    print("Windows archive unavailable; omitting Windows and its installer.", flush=True)
-for target in targets:
+command = ["dist", "build", "--artifacts=global", "--installer=shell",
+           "--installer=powershell", "--output-format=json"]
+for target in required:
     suffix = ".zip" if target.endswith("windows-msvc") else ".tar.gz"
     archive = artifacts / f"sources-{target}{suffix}"
     if not archive.is_file():
