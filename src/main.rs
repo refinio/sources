@@ -1,10 +1,12 @@
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use sources::config::{self, CONFIG};
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 mod commands;
+mod run;
 mod workspace;
 
 #[derive(Parser)]
@@ -24,6 +26,12 @@ struct Cli {
 enum Commands {
     /// Create configuration and ignore entries without downloading sources
     Setup,
+    /// Run a command in a source's active workspace checkout
+    Run {
+        name: String,
+        #[arg(last = true, required = true, num_args = 1..)]
+        command: Vec<OsString>,
+    },
     /// Validate development checkouts without downloading or changing sources
     Check,
     /// Cache required revisions without activating them
@@ -108,6 +116,7 @@ fn execute(cli: Cli) -> Result<i32> {
             let project = config::Project::load(root)?;
             project.validate()?;
             match command {
+                Commands::Run { name, command } => return run::execute(&project, &name, &command),
                 Commands::Fetch { names } => commands::fetch(&project, &names)?,
                 Commands::CheckRelease => commands::check_release(&project)?,
                 Commands::Lock { pins, check } => commands::lock(&project, &pins, check)?,
