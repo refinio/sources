@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.89"
 description = "Select development checkouts and pinned release sources through stable workspace paths"
 repository = "https://github.com/refinio/sources"
+license = "MIT"
 publish = false
 
 [dependencies]

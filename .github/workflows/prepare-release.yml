@@ -1,52 +1,88 @@
-# This workflow prepares private Actions artifacts. It never creates a GitHub Release,
-# pushes a tag, uploads release assets, publishes packages, or changes repository visibility.
+# The complete release build is read-only. The publishing caller alone can upload.
 name: Prepare release artifacts
 
 on:
+  pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact release tag to check out; otherwise use the candidate commit
+        required: false
+        type: string
+        default: ''
+      tag:
+        description: Release tag that must match the Cargo package version
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.version.outputs.commit }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Validate release version before building
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 .github/scripts/test-release.py
+          python3 .github/scripts/release-tag.py
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   archives:
     name: Package ${{ matrix.target }}
+    needs: version
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            experimental: false
           - os: macos-15
             target: aarch64-apple-darwin
-            experimental: false
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            experimental: false
           - os: windows-2022
             target: x86_64-pc-windows-msvc
-            experimental: true
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
       - run: rustup toolchain install 1.99.1 --profile minimal
       - run: python3 .github/scripts/install-dist.py "$RUNNER_TEMP/sources-dist"
-      - run: dist plan
       - name: Package executable and record platform manifest
+        env:
+          TARGET: ${{ matrix.target }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
         run: |
-          dist build --artifacts=local --target '${{ matrix.target }}' --output-format=json > local-build.json
-          cp local-build.json 'target/distrib/${{ matrix.target }}-dist-manifest.json'
+          dist build --artifacts=local --target "$TARGET" --tag "$RELEASE_TAG" --output-format=json > local-build.json
+          cp local-build.json "target/distrib/$TARGET-dist-manifest.json"
       - name: Smoke test packaged executable
-        if: runner.os != 'Windows'
-        run: python3 .github/scripts/smoke-package.py 'target/distrib/sources-${{ matrix.target }}.tar.gz'
-      - name: Smoke test packaged Windows executable
-        if: runner.os == 'Windows'
-        run: python3 .github/scripts/smoke-package.py 'target/distrib/sources-${{ matrix.target }}.zip'
+        env:
+          TARGET: ${{ matrix.target }}
+          RUNNER_PLATFORM: ${{ runner.os }}
+        run: |
+          extension=tar.gz
+          if [ "$RUNNER_PLATFORM" = Windows ]; then extension=zip; fi
+          python3 .github/scripts/smoke-package.py "target/distrib/sources-$TARGET.$extension"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: archives-${{ matrix.target }}
@@ -57,11 +93,16 @@ jobs:
             target/distrib/*-dist-manifest.json
           if-no-files-found: error
           retention-days: 14
+
   installers:
-    needs: archives
+    needs: [version, archives]
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
       - run: rustup toolchain install 1.99.1 --profile minimal
       - run: python3 .github/scripts/install-dist.py "$RUNNER_TEMP/sources-dist"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -74,6 +115,44 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sources-release-candidate
-          path: target/distrib/*
+          path: |
+            target/distrib/sources-*.tar.gz
+            target/distrib/sources-*.zip
+            target/distrib/sources-*.sha256
+            target/distrib/sha256.sum
+            target/distrib/sources-installer.sh
+            target/distrib/sources-installer.ps1
           if-no-files-found: error
           retention-days: 14
+
+  install:
+    name: Install ${{ matrix.target }}
+    needs: [version, installers]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sources-release-candidate
+          path: target/distrib
+      - name: Exercise generated installer success and failure
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: python3 .github/scripts/verify-installers.py "$TARGET"

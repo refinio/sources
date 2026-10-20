@@ -86,23 +86,6 @@ jobs:
           TMPDIR: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
-      - name: Install pinned cargo-dist
-        run: python3 .github/scripts/install-dist.py "$RUNNER_TEMP/sources-dist"
-      - name: Validate distribution plan
-        run: dist plan
-      - name: Package executable
-        run: dist build --artifacts=local --target '${{ matrix.target }}'
-      - name: Smoke test packaged executable
-        if: runner.os != 'Windows'
-        run: python3 .github/scripts/smoke-package.py 'target/distrib/sources-${{ matrix.target }}.tar.gz'
-      - name: Smoke test packaged Windows executable
-        if: runner.os == 'Windows'
-        run: python3 .github/scripts/smoke-package.py 'target/distrib/sources-${{ matrix.target }}.zip'
-      - name: Generate and parse installers
-        if: runner.os == 'Linux' && matrix.git == '2.56.0'
-        run: |
-          dist build --artifacts=global
-          sh -n target/distrib/sources-installer.sh
       - name: Preserve failed fixtures
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

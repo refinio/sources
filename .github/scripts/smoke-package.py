@@ -23,6 +23,9 @@ with tempfile.TemporaryDirectory(prefix="sources-package-smoke-") as directory:
         with tarfile.open(archive) as package:
             package.extractall(root, filter="data")
         name = "sources"
+    licenses = list(root.rglob("LICENSE"))
+    if len(licenses) != 1 or licenses[0].read_bytes() != Path("LICENSE").read_bytes():
+        sys.exit("Package must contain exactly one copy of the repository LICENSE")
     binaries = [p for p in root.rglob(name) if p.is_file()]
     if len(binaries) != 1:
         sys.exit(f"Expected one packaged executable, found {binaries}")

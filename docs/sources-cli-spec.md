@@ -14,9 +14,17 @@ There are no environment-variable overrides for source locations. Developers con
 
 Implement the CLI in Rust and invoke the installed Git executable with separate arguments, without an implicit shell. Use Git's machine-readable output for inspection. Git remains an installation prerequisite; users do not need a Rust toolchain.
 
-Linux and macOS are the supported platforms for version 1. Native Windows support is best effort, including directory junctions where appropriate. Platform limitations must produce useful errors, but Windows does not block a release that passes the Linux and macOS checks.
+Linux and macOS are the supported platforms for version 1. Native Windows support is best effort, including directory junctions where appropriate. Platform limitations must produce useful errors. Public distribution publishes the advertised platform archives together after their builds and installation checks succeed.
 
 Distribute prebuilt binaries with a single installation command for each platform. Shell and PowerShell installers can be generated with cargo-dist. Pin build dependencies and toolchains, and test the packaged executable as well as the development build.
+
+### Public distribution and agent skills
+
+Distribute Sources under the MIT license from `refinio/sources` on GitHub. Publishing a GitHub Release manually, including publishing a saved draft or prerelease, triggers native builds for Linux x86-64, macOS Intel, macOS Apple silicon, and Windows x86-64. Check out the release tag and require its version to match the Cargo package version. Build and verify every archive before uploading binaries, checksums, and generated shell/PowerShell installers to that existing release. Ordinary pushes do not create releases. Read-only candidate builds may run on pull requests or manual dispatch without publishing assets.
+
+The single-command installers use GitHub Releases to select a release and detect the computer's platform. The default command selects the latest stable release; versioned release URLs select an exact version or prerelease. Git remains required, but Rust and the GitHub CLI are not needed to install a binary. After successful installation, print `npx skills add refinio/sources`; do not run it automatically or print a success instruction after installation fails.
+
+Ship two brief distributable agent skills. `sources-setup` applies when a user requests external local or symlink dependencies, or when an agent finds loose external local dependencies. Before adopting Sources in an unconfigured project, ask whether the user wants it; on acceptance, briefly explain and perform setup. Existing configured projects use the normal development workflow. `sources-release` covers capturing or updating fixed pins, selecting pinned sources for a release or local reproduction, and returning to development. These skills do not authorize publishing a consuming application's release.
 
 Keep command parsing and output separate from configuration validation, Git operations, workspace link operations, and command execution. The command implementation owns the project lock and sequences these operations. No transaction journal, rollback system, or saved mode flag is required.
 
@@ -454,4 +462,4 @@ Inspect fetched refs and object graphs to verify that shallow acquisition avoids
 
 ## Implementation boundary
 
-Implementation of version 1 in the standalone refinio/sources repository was authorized on 2026-10-20. This does not authorize migration of consuming workspaces or publication of release artifacts. Integrating the tool into consuming workspaces requires replacing their external workspace paths and tracked symlink assumptions with stable managed paths, and making their package dependency locks reproducible in that layout.
+Implementation of version 1 in the standalone refinio/sources repository was authorized on 2026-10-20. The user subsequently authorized public repository visibility, MIT licensing, installers, agent skills, and native binary publication when a release is manually published. This setup does not create a release or migrate consuming workspaces by itself. Integrating the tool into consuming workspaces requires replacing their external workspace paths and tracked symlink assumptions with stable managed paths, and making their package dependency locks reproducible in that layout.
