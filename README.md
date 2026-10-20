@@ -15,7 +15,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/refinio/sources/release
 On Windows x86-64, run in PowerShell:
 
 ```powershell
-irm https://github.com/refinio/sources/releases/latest/download/sources-installer.ps1 | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/refinio/sources/releases/latest/download/sources-installer.ps1 | iex"
 ```
 
 The installers select the archive for your computer and install to Cargo's binary directory without requiring Rust or the GitHub CLI. SHA-256 checksums are published with the archives. The shell installer verifies them when `sha256sum` is available; PowerShell does not verify them automatically. Git must be on `PATH`. Follow the printed `PATH` instructions if needed. Use a release's versioned installer URL instead of `latest/download` to select an exact version or prerelease.
