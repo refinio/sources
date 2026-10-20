@@ -283,3 +283,29 @@ fn non_utf8_remote_url_does_not_match_a_replacement_character_path() {
         "non-UTF-8 remote URL",
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn check_accepts_matching_remote_urls_alongside_non_utf8_candidates() {
+    let f = Fixture::new();
+    let Some(raw) = raw_directory(&f, b"upstream-\xff") else {
+        return;
+    };
+    let dev = f.repo("dev");
+    let expected = "https://example.invalid/team/repo";
+    success(
+        f.command("git")
+            .current_dir(&dev)
+            .args(["remote", "add", "origin"])
+            .arg(&raw)
+            .output()
+            .unwrap(),
+    );
+    f.git(&dev, &["remote", "add", "upstream", expected]);
+    f.configure(json!({"a":{"url":expected}}), json!({"a":dev}));
+    success(f.cli().arg("check").output().unwrap());
+
+    f.git(&dev, &["remote", "remove", "upstream"]);
+    f.git(&dev, &["config", "--add", "remote.origin.url", expected]);
+    success(f.cli().arg("check").output().unwrap());
+}

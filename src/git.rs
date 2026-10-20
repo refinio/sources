@@ -108,15 +108,24 @@ impl Git {
         } else {
             self.text(&["remote"])?.lines().map(str::to_owned).collect()
         };
+        let mut encoding_error = None;
         for remote in remotes {
             let output = self.output(&["remote", "get-url", "--all", &remote])?;
             if !output.status.success() {
                 continue;
             }
-            let urls = std::str::from_utf8(&output.stdout).context(
-                "Git returned a non-UTF-8 remote URL; configure a UTF-8 path alias or a percent-encoded file URL",
-            )?;
-            for url in urls.lines() {
+            for url in output.stdout.split(|byte| *byte == b'\n') {
+                let url = url.strip_suffix(b"\r").unwrap_or(url);
+                if url.is_empty() {
+                    continue;
+                }
+                let url = match std::str::from_utf8(url) {
+                    Ok(url) => url,
+                    Err(error) => {
+                        encoding_error = Some(error);
+                        continue;
+                    }
+                };
                 let local = local_url_path(url).map(|path| self.path.join(path));
                 let identity = match local {
                     Some(path) => local_identity(&path),
@@ -126,6 +135,11 @@ impl Git {
                     return Ok(());
                 }
             }
+        }
+        if let Some(error) = encoding_error {
+            return Err(error).context(
+                "Git returned a non-UTF-8 remote URL; configure a UTF-8 path alias or a percent-encoded file URL",
+            );
         }
         bail!(
             "repository mismatch at {}: no {}remote matches {}{}",
