@@ -182,7 +182,10 @@ impl Project {
             Local::default()
         };
         for source in config.sources.values_mut() {
-            ensure!(!source.url.trim().is_empty(), "missing upstream URL; edit {CONFIG}");
+            ensure!(
+                !source.url.trim().is_empty(),
+                "missing upstream URL; edit {CONFIG}"
+            );
             let scp_style = source
                 .url
                 .split_once(':')

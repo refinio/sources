@@ -5,6 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 mod commands;
+mod workspace;
 
 #[derive(Parser)]
 #[command(
@@ -29,6 +30,20 @@ enum Commands {
     Fetch { names: Vec<String> },
     /// Check and cache all locked release inputs without activation
     CheckRelease,
+    /// Point workspace links at validated development checkouts
+    Dev,
+    /// Inspect actual workspace links, commits, and source changes locally
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Activate locked commits in managed checkouts
+    Release {
+        #[arg(long, conflicts_with = "offline")]
+        clean: bool,
+        #[arg(long)]
+        offline: bool,
+    },
     /// Capture development HEADs or update selected source pins
     Lock {
         pins: Vec<String>,
@@ -96,6 +111,11 @@ fn execute(cli: Cli) -> Result<i32> {
                 Commands::Fetch { names } => commands::fetch(&project, &names)?,
                 Commands::CheckRelease => commands::check_release(&project)?,
                 Commands::Lock { pins, check } => commands::lock(&project, &pins, check)?,
+                Commands::Dev => workspace::dev(&project)?,
+                Commands::Status { json } => return workspace::status(&project, json),
+                Commands::Release { clean, offline } => {
+                    workspace::release(&project, clean, offline)?
+                }
                 _ => unreachable!(),
             }
         }

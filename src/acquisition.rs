@@ -1,7 +1,9 @@
 use crate::git::{Git, redact};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -17,10 +19,251 @@ pub struct Revision {
 }
 
 pub struct ModuleRevision {
-    pub name: String,
+    pub name: OsString,
     pub path: PathBuf,
     pub url: String,
     pub revision: Revision,
+}
+
+fn module_key(name: &OsStr, suffix: &str) -> OsString {
+    let mut key = OsString::from("submodule.");
+    key.push(name);
+    key.push(suffix);
+    key
+}
+
+pub fn activate(checkout: &Path, revision: &Revision) -> Result<()> {
+    let root = checkout
+        .parent()
+        .and_then(Path::parent)
+        .context("invalid managed checkout path")?;
+    let gitdir = checkout.join(".git");
+    preflight_activation(checkout, &gitdir, revision, root)?;
+    let changes = Git::at(checkout).changes()?;
+    ensure!(
+        changes.is_empty(),
+        "managed checkout has source changes: {}; preserve them elsewhere or rerun sources release --clean",
+        changes
+            .iter()
+            .map(|change| change.path.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    activate_repository(checkout, &gitdir, revision, root)
+}
+
+pub fn activation_issues(checkout: &Path) -> Result<Vec<String>> {
+    let git = Git::at(checkout);
+    if git.head()?.is_none() {
+        return Ok(Vec::new());
+    }
+    let output = git.checked(&["submodule", "status", "--recursive"])?;
+    let mut issues = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let detail = match line.as_bytes().first() {
+            Some(b'-') => "missing submodule",
+            Some(b'+') => "mismatched submodule commit",
+            Some(b'U') => "conflicted submodule",
+            _ => continue,
+        };
+        issues.push(format!("{detail}: {}; rerun sources release", &line[1..]));
+    }
+    Ok(issues)
+}
+
+fn gitlinks(git: &Git) -> Result<Vec<PathBuf>> {
+    let output = git.checked(&["ls-files", "--stage", "-z"])?;
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|record| {
+            if record.starts_with(b"160000 ") {
+                record
+                    .iter()
+                    .position(|byte| *byte == b'\t')
+                    .map(|tab| crate::git::path_from_bytes(&record[tab + 1..]))
+            } else {
+                None
+            }
+        })
+        .collect())
+}
+
+fn validate_module_worktree(worktree: &Path, expected_gitdir: &Path, root: &Path) -> Result<()> {
+    safe_managed_path(worktree, root)?;
+    let gitfile = worktree.join(".git");
+    safe_managed_path(&gitfile, root)?;
+    let metadata = fs::symlink_metadata(&gitfile)?;
+    ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "submodule Git metadata is not a managed gitfile at {}; rerun sources release --clean",
+        gitfile.display()
+    );
+    let contents = fs::read(&gitfile)?;
+    let target = contents
+        .strip_prefix(b"gitdir: ")
+        .context("invalid submodule gitfile; rerun sources release --clean")?;
+    let target = target.strip_suffix(b"\n").unwrap_or(target);
+    let target = target.strip_suffix(b"\r").unwrap_or(target);
+    let actual = worktree.join(crate::git::path_from_bytes(target));
+    safe_managed_path(&actual, root)?;
+    ensure!(
+        actual.canonicalize()? == expected_gitdir.canonicalize()?,
+        "submodule gitfile points to an unexpected repository at {}; rerun sources release --clean",
+        gitfile.display()
+    );
+    let actual_root = Git::at(worktree).checked(&["rev-parse", "--show-toplevel"])?;
+    let actual_root = crate::git::path_from_bytes(
+        actual_root
+            .stdout
+            .strip_suffix(b"\n")
+            .unwrap_or(&actual_root.stdout),
+    );
+    ensure!(
+        actual_root.canonicalize()? == worktree.canonicalize()?,
+        "submodule worktree points elsewhere at {}; rerun sources release --clean",
+        worktree.display()
+    );
+    Ok(())
+}
+
+fn preflight_activation(
+    checkout: &Path,
+    gitdir: &Path,
+    revision: &Revision,
+    root: &Path,
+) -> Result<()> {
+    safe_managed_path(checkout, root)?;
+    validate_gitdir(gitdir, root)?;
+    if checkout.join(".git").exists() {
+        for old in gitlinks(&Git::at(checkout))? {
+            safe_relative(&old)?;
+            let old_worktree = checkout.join(&old);
+            safe_managed_path(&old_worktree, root)?;
+            if !revision.modules.iter().any(|module| module.path == old) && old_worktree.is_dir() {
+                ensure!(
+                    fs::read_dir(&old_worktree)?.next().is_none(),
+                    "submodule membership changed at {}; preserving its existing files requires sources release --clean",
+                    old_worktree.display()
+                );
+            }
+        }
+    }
+    if !checkout.join(".git").exists() && gitdir.join("index").exists() {
+        ensure!(
+            Git::for_git_dir(gitdir)
+                .output(&["diff", "--cached", "--quiet"])?
+                .status
+                .success(),
+            "cached submodule has staged source changes at {}; preserve them elsewhere or run sources release --clean",
+            gitdir.display()
+        );
+    }
+    for module in &revision.modules {
+        safe_relative(&module.path)?;
+        safe_relative(Path::new(&module.name))?;
+        let worktree = checkout.join(&module.path);
+        let module_gitdir = gitdir.join("modules").join(&module.name);
+        safe_managed_path(&worktree, root)?;
+        validate_gitdir(&module_gitdir, root)?;
+        if worktree.join(".git").exists() {
+            validate_module_worktree(&worktree, &module_gitdir, root)?;
+        } else if worktree.exists() {
+            ensure!(
+                worktree.is_dir() && fs::read_dir(&worktree)?.next().is_none(),
+                "unrelated files block submodule {}; rerun sources release --clean",
+                worktree.display()
+            );
+        }
+        preflight_activation(&worktree, &module_gitdir, &module.revision, root)?;
+    }
+    Ok(())
+}
+
+fn relative_path(from: &Path, to: &Path) -> PathBuf {
+    let from = from.components().collect::<Vec<_>>();
+    let to = to.components().collect::<Vec<_>>();
+    let common = from
+        .iter()
+        .zip(&to)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut result = PathBuf::new();
+    for _ in common..from.len() {
+        result.push("..");
+    }
+    for component in &to[common..] {
+        result.push(component);
+    }
+    result
+}
+
+fn activate_repository(
+    checkout: &Path,
+    gitdir: &Path,
+    revision: &Revision,
+    root: &Path,
+) -> Result<()> {
+    Git::at(checkout).checked(&[
+        "checkout",
+        "--detach",
+        "--no-overwrite-ignore",
+        "--no-recurse-submodules",
+        &revision.commit,
+    ])?;
+    for module in &revision.modules {
+        let worktree = checkout.join(&module.path);
+        let module_gitdir = gitdir.join("modules").join(&module.name);
+        safe_managed_path(&worktree, root)?;
+        validate_gitdir(&module_gitdir, root)?;
+        let materialize = !worktree.join(".git").exists();
+        if materialize {
+            if worktree.exists() {
+                ensure!(
+                    worktree.is_dir() && fs::read_dir(&worktree)?.next().is_none(),
+                    "unrelated files block submodule {}; rerun sources release --clean",
+                    worktree.display()
+                );
+            }
+            fs::create_dir_all(&worktree)?;
+            let relative = relative_path(&worktree, &module_gitdir);
+            let mut gitfile = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(worktree.join(".git"))?;
+            gitfile.write_all(b"gitdir: ")?;
+            gitfile.write_all(relative.as_os_str().as_encoded_bytes())?;
+            gitfile.write_all(b"\n")?;
+        }
+        let module_git = Git::for_git_dir(&module_gitdir);
+        let relative = relative_path(&module_gitdir, &worktree);
+        module_git.checked(&[
+            OsStr::new("config"),
+            OsStr::new("core.worktree"),
+            relative.as_os_str(),
+        ])?;
+        validate_module_worktree(&worktree, &module_gitdir, root)?;
+        Git::at(checkout).checked(&[
+            OsStr::new("config"),
+            &module_key(&module.name, ".url"),
+            OsStr::new(&module.url),
+        ])?;
+        Git::at(checkout).checked(&[
+            OsStr::new("config"),
+            &module_key(&module.name, ".active"),
+            OsStr::new("true"),
+        ])?;
+        module_git.checked(&["config", "remote.origin.url", &module.url])?;
+        if materialize {
+            // Rebuild only an empty, disconnected worktree. checkout-index
+            // refuses to overwrite files, including ignored artifacts.
+            let worktree_git = Git::at(&worktree);
+            worktree_git.checked(&["read-tree", &module.revision.commit])?;
+            worktree_git.checked(&["checkout-index", "--all"])?;
+        }
+        activate_repository(&worktree, &module_gitdir, &module.revision, root).with_context(|| format!("cannot activate submodule {}; rerun sources release or sources release --clean", module.path.display()))?;
+    }
+    Ok(())
 }
 
 pub fn ensure_revision(
@@ -163,9 +406,11 @@ fn validate_gitdir(gitdir: &Path, root: &Path) -> Result<()> {
         safe_managed_path(&gitdir.join(entry), root)?;
     }
     let git = Git::for_git_dir(gitdir);
-    let common = git.text(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    let common = git.checked(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    let common =
+        crate::git::path_from_bytes(common.stdout.strip_suffix(b"\n").unwrap_or(&common.stdout));
     ensure!(
-        Path::new(&common).canonicalize()? == gitdir.canonicalize()?,
+        common.canonicalize()? == gitdir.canonicalize()?,
         "submodule has external Git metadata; rerun sources release --clean"
     );
     let alternates = gitdir.join("objects/info/alternates");
@@ -193,14 +438,18 @@ fn inspect_revision(
         .split(|byte| *byte == 0)
         .filter(|record| record.starts_with(b"160000 "))
     {
-        let record = std::str::from_utf8(record).context("submodule paths must be UTF-8")?;
-        let (metadata, path) = record.split_once('\t').context("invalid Git tree record")?;
+        let tab = record
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .context("invalid Git tree record")?;
+        let metadata = std::str::from_utf8(&record[..tab]).context("invalid Git tree metadata")?;
+        let path = crate::git::path_from_bytes(&record[tab + 1..]);
         let oid = metadata
             .split_whitespace()
             .nth(2)
             .context("missing gitlink object ID")?;
-        safe_relative(Path::new(path))?;
-        gitlinks.insert(path.to_owned(), oid.to_owned());
+        safe_relative(&path)?;
+        gitlinks.insert(path, oid.to_owned());
     }
     if gitlinks.is_empty() {
         return Ok(Revision {
@@ -222,20 +471,27 @@ fn inspect_revision(
     view_git.checked(&["init", "--quiet", format])?;
     view_git.checked(&["remote", "add", "origin", upstream])?;
     view_git.checked(&[
-        "-c",
-        "protocol.file.allow=always",
-        "fetch",
-        "--no-tags",
-        "--depth=1",
-        "--recurse-submodules=no",
-        gitdir.to_str().context("managed paths must be UTF-8")?,
+        OsStr::new("-c"),
+        OsStr::new("protocol.file.allow=always"),
+        OsStr::new("fetch"),
+        OsStr::new("--no-tags"),
+        OsStr::new("--depth=1"),
+        OsStr::new("--recurse-submodules=no"),
+        gitdir.as_os_str(),
+        OsStr::new(commit),
+    ])?;
+    view_git.checked(&[
+        "checkout",
+        "--detach",
+        "--no-overwrite-ignore",
+        "--no-recurse-submodules",
         commit,
     ])?;
-    view_git.checked(&["checkout", "--detach", "--no-overwrite-ignore", commit])?;
     view_git.checked(&["submodule", "init"])?;
     let paths = view_git.checked(&[
         "config",
         "--null",
+        "--name-only",
         "--file",
         ".gitmodules",
         "--get-regexp",
@@ -247,21 +503,32 @@ fn inspect_revision(
         .split(|byte| *byte == 0)
         .filter(|record| !record.is_empty())
     {
-        let record =
-            std::str::from_utf8(record).context("submodule configuration must be UTF-8")?;
-        let (key, path) = record
-            .split_once('\n')
-            .context("invalid submodule configuration")?;
-        let name = key
-            .strip_prefix("submodule.")
-            .and_then(|name| name.strip_suffix(".path"))
+        let name = record
+            .strip_prefix(b"submodule.")
+            .and_then(|name| name.strip_suffix(b".path"))
             .context("invalid submodule name")?;
-        let Some(module_commit) = gitlinks.remove(path) else {
+        let name = crate::git::path_from_bytes(name).into_os_string();
+        let key = crate::git::path_from_bytes(record).into_os_string();
+        let path = view_git.checked(&[
+            OsStr::new("config"),
+            OsStr::new("--null"),
+            OsStr::new("--file"),
+            OsStr::new(".gitmodules"),
+            OsStr::new("--get"),
+            &key,
+        ])?;
+        let path =
+            crate::git::path_from_bytes(path.stdout.strip_suffix(b"\0").unwrap_or(&path.stdout));
+        let Some(module_commit) = gitlinks.remove(&path) else {
             continue;
         };
-        safe_relative(Path::new(name))?;
-        let url = view_git.text(&["config", "--get", &format!("submodule.{name}.url")])?;
-        let module_gitdir = gitdir.join("modules").join(name);
+        safe_relative(Path::new(&name))?;
+        let url = view_git.text(&[
+            OsStr::new("config"),
+            OsStr::new("--get"),
+            &module_key(&name, ".url"),
+        ])?;
+        let module_gitdir = gitdir.join("modules").join(&name);
         safe_managed_path(&module_gitdir, root)?;
         let result = (|| -> Result<Revision> {
             if !module_gitdir.exists() {
@@ -286,10 +553,10 @@ fn inspect_revision(
             cache_commit(&module, &url, &module_commit, policy)?;
             inspect_revision(&module_gitdir, &url, &module_commit, policy, scratch, root)
         })()
-        .with_context(|| format!("submodule {path} at {module_commit}"))?;
+        .with_context(|| format!("submodule {} at {module_commit}", path.display()))?;
         modules.push(ModuleRevision {
-            name: name.to_owned(),
-            path: PathBuf::from(path),
+            name,
+            path,
             url,
             revision: result,
         });
@@ -297,7 +564,11 @@ fn inspect_revision(
     ensure!(
         gitlinks.is_empty(),
         "gitlink has no .gitmodules entry: {}",
-        gitlinks.keys().cloned().collect::<Vec<_>>().join(", ")
+        gitlinks
+            .keys()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     modules.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(Revision {

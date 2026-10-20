@@ -185,7 +185,7 @@ impl Git {
             }
             let status = String::from_utf8_lossy(&record[..2]).into_owned();
             let path = path_from_bytes(&record[3..]);
-            if status != " M" || !modules.contains(&path) {
+            if !matches!(status.as_str(), " M" | " D") || !modules.contains(&path) {
                 changes.push(Change {
                     path: prefix.join(&path).to_string_lossy().into_owned(),
                     status,
@@ -240,7 +240,7 @@ impl Git {
             .with_context(|| format!("{input} does not identify a locally available object"))
     }
 
-    pub(crate) fn text(&self, args: &[&str]) -> Result<String> {
+    pub(crate) fn text(&self, args: &[impl AsRef<OsStr>]) -> Result<String> {
         let output = self.checked(args)?;
         Ok(String::from_utf8(output.stdout)
             .context("Git returned non-UTF-8 output")?
@@ -248,12 +248,14 @@ impl Git {
             .to_owned())
     }
 
-    pub(crate) fn checked(&self, args: &[&str]) -> Result<Output> {
+    pub(crate) fn checked(&self, args: &[impl AsRef<OsStr>]) -> Result<Output> {
         let output = self.output(args)?;
         if !output.status.success() {
             bail!(
                 "Git {} failed at {}: {}",
-                args.first().unwrap_or(&"operation"),
+                args.first()
+                    .map(|arg| arg.as_ref().to_string_lossy())
+                    .unwrap_or_else(|| "operation".into()),
                 self.path.display(),
                 redact(String::from_utf8_lossy(&output.stderr).trim())
             );
@@ -300,6 +302,7 @@ impl Git {
         }
         if let Some(git_dir) = &self.git_dir {
             command.arg("--git-dir").arg(git_dir);
+            command.arg("--work-tree").arg(git_dir);
         }
         command.args(args);
         command.output().with_context(|| {
