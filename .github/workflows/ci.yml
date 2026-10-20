@@ -80,7 +80,7 @@ jobs:
           python3 --version
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked -- --nocapture
+      - run: cargo test --locked --no-fail-fast -- --nocapture
         timeout-minutes: 3
         env:
           TMPDIR: ${{ runner.temp }}

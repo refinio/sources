@@ -228,9 +228,10 @@ fn dirty_nested_modules_are_rejected_before_switching_managed_inputs() {
     let output = f.cli().arg("release").output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let changed = Path::new("dep").join("nested child");
     assert!(
-        stderr.contains("dep/nested child/tracked.txt")
-            && stderr.contains("dep/nested child/untracked.txt"),
+        stderr.contains(changed.join("tracked.txt").to_string_lossy().as_ref())
+            && stderr.contains(changed.join("untracked.txt").to_string_lossy().as_ref()),
         "{stderr}"
     );
     assert_eq!(f.git(&managed, &["rev-parse", "HEAD"]), parent_head);
