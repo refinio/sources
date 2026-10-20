@@ -470,6 +470,7 @@ fn inspect_revision(
     };
     view_git.checked(&["init", "--quiet", format])?;
     view_git.checked(&["remote", "add", "origin", upstream])?;
+    let cache_path = relative_path(view.path(), gitdir);
     view_git.checked(&[
         OsStr::new("-c"),
         OsStr::new("protocol.file.allow=always"),
@@ -477,7 +478,7 @@ fn inspect_revision(
         OsStr::new("--no-tags"),
         OsStr::new("--depth=1"),
         OsStr::new("--recurse-submodules=no"),
-        gitdir.as_os_str(),
+        cache_path.as_os_str(),
         OsStr::new(commit),
     ])?;
     view_git.checked(&[

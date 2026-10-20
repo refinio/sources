@@ -26,21 +26,21 @@ impl std::error::Error for AmbiguousCommitId {}
 
 pub struct Git {
     path: PathBuf,
-    git_dir: Option<PathBuf>,
+    inside_git_dir: bool,
 }
 
 impl Git {
     pub fn at(path: &Path) -> Self {
         Self {
             path: path.to_owned(),
-            git_dir: None,
+            inside_git_dir: false,
         }
     }
 
     pub(crate) fn for_git_dir(path: &Path) -> Self {
         Self {
             path: path.to_owned(),
-            git_dir: Some(path.to_owned()),
+            inside_git_dir: true,
         }
     }
 
@@ -321,9 +321,10 @@ impl Git {
         if !network {
             command.args(["-c", "protocol.allow=never"]);
         }
-        if let Some(git_dir) = &self.git_dir {
-            command.arg("--git-dir").arg(git_dir);
-            command.arg("--work-tree").arg(git_dir);
+        if self.inside_git_dir {
+            // The process already runs inside the metadata directory. Relative
+            // arguments also avoid Windows verbatim paths that Git rejects.
+            command.args(["--git-dir=.", "--work-tree=."]);
         }
         command.args(args);
         command.output().with_context(|| {
