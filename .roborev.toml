@@ -1,0 +1,17 @@
+agent = "codex"
+
+# Project-specific review guidelines
+review_guidelines = """
+This is an experimental first version. Absolutely no backwards compatibility is required.
+Permit hard cuts with all in-repository consumers updated together. Flag compatibility
+shims, aliases, deprecation layers, and transitional wrappers. Establish compatibility
+requirements before adding downstream consumers; explicitly report intentional public
+interface or persisted-format breaks.
+
+Review against docs/sources-cli-spec.md. Managed .sources state and workspace link objects
+are disposable; clean recreation may discard managed edits. Do not request rollback,
+transaction journals, ownership manifests, or independent remote availability proofs.
+Use shallow full checkouts and recursive pinned submodules, never partial clones or blob
+filters. Linux/macOS are required; Windows is best effort. Keep development checkouts and
+link targets untouched. Test through the public CLI with real Git and filesystems.
+"""
