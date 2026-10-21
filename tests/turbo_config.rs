@@ -12,7 +12,7 @@ fn turbo_packages_are_optional_and_coexist_with_pnpm_release_mappings() {
     f.configure(
         json!({"child": {
             "url": upstream,
-            "pnpm": {"@example/protocol": {"path": ".", "version": "1.2.3"}},
+            "pnpm": {"@example/protocol": {"path": "."}},
             "packages": {
                 "@Example/protocol": {"tasks": ["build", "pack:app", "test with spaces", "-legacy"]},
                 "@example/ui": {"tasks": ["pack"]}

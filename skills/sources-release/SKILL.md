@@ -7,7 +7,7 @@ description: Pins and selects external Git sources or configured pnpm package re
 
 Require Git, an installed `sources` CLI, and a configured `.sources.conf`; see the [official README](https://github.com/refinio/sources#readme) for installation and setup. If adoption is needed, ask whether the user wants Sources before changing the project.
 
-Work from the app root or use `sources -C <app-root> ...`. Establish whether the user wants new pins or reproduction of existing pins. Release activation never changes Git pins or configured exact package versions. Opt-in pnpm switching changes effective overrides and may update its dependency lock.
+Work from the app root or use `sources -C <app-root> ...`. Establish whether the user wants new pins or reproduction of existing pins. Release activation never changes Git pins or locked package versions. Opt-in pnpm switching changes effective overrides and may update its dependency lock.
 
 To capture a newly tested development combination, first commit and make source changes available upstream within the user's authorized scope. Dirty development edits are excluded from pins.
 
@@ -17,7 +17,7 @@ sources lock --check
 git diff -- .sources.lock
 ```
 
-Unqualified `sources lock` captures every Git-release development checkout's HEAD, regardless of active mode, without fetching. Adding `--check` ensures proposed commits and recursive submodule inputs are cached from configured upstreams, fetching missing inputs; cache presence does not prove current remote availability or test success.
+Unqualified `sources lock` captures every development checkout's HEAD, regardless of active mode, without fetching. Adding `--check` ensures proposed commits and recursive submodule inputs are cached from configured upstreams, fetching missing inputs; cache presence does not prove current remote availability or test success.
 
 For a partial update, replace the example commit with the intended full commit ID:
 
@@ -27,7 +27,9 @@ sources lock lib:<full-commit> --check
 
 For a Git tag, use `sources lock lib:tag=v1.2.3 --check`; it stores the resolved commit, not a moving tag.
 
-For sources with `pnpm` package mappings, select exact published versions in `.sources.conf`. No Git pin is required for those sources. `sources dev` selects file overrides; `sources release` selects registry versions. Both run pnpm install, may access the registry, and may update `pnpm-lock.yaml`. Review and commit the release-mode workspace overrides, pnpm lock, and configuration together. `lock`, `fetch`, and `check-release` handle Git inputs only.
+For sources with `pnpm` mappings, pin published versions with `sources lock --registry @example/ui:1.2.3 --check`. This downloads selected release archives into pnpm's store before writing; download failure preserves the lock. Without `--check`, registry pinning needs no network or pnpm. Git and package pins coexist in `.sources.lock` version 2, and either lock selection preserves the other. Git is the default; use `--git` explicitly for clarity.
+
+`sources dev` selects local checkouts and `sources release --git` selects pinned checkouts through identical file overrides. Once file overrides and the pnpm lock agree, switching between them leaves dependency files untouched. Initial setup and returning from registry selection install with pnpm; refresh file packages explicitly when inputs change. `sources release --registry` selects locked published versions and always installs. It uses Git for sources without package mappings. Review and commit Sources pins, workspace overrides, and the pnpm lock together. `fetch` and `check-release` handle Git inputs for all sources.
 
 Review the complete `.sources.lock`; commit approved pins with the app changes when authorized. For reproduction, retain the lock belonging to the selected app revision and do not run `lock` merely to activate it.
 
@@ -43,12 +45,12 @@ git rev-parse HEAD
 
 For local switching, `sources release` retains nonconflicting ignored artifacts, obtains missing inputs, and refuses dirty managed sources or overwrite conflicts. Retained outputs may need rebuilding.
 
-For offline reproduction, use `sources release --offline` only with complete cached parent and recursive submodule commits, trees, and file contents. It forwards `--offline` to pnpm when enabled, requiring its package inputs in the local store too. It cannot be combined with `--clean`. `sources fetch` or `sources check-release` can prepare caches online without activating or repinning.
+For offline reproduction, use `sources release --git --offline` or `sources release --registry --offline` only with complete cached parent and recursive submodule commits, trees, and file contents. It forwards `--offline` to pnpm when enabled, requiring its package inputs in the local store too. It cannot be combined with `--clean`. `sources fetch` or `sources check-release` can prepare caches online without activating or repinning.
 
-For pnpm integration, release already installs dependencies with lock updates allowed; verify the committed release state with `pnpm install --frozen-lockfile`. Otherwise install with the project's frozen package lock. Build and test with existing tooling. Sources does not clean the app's outputs; use a fresh app checkout or its established cleanup procedure separately. Record the app HEAD, source lock, tooling, and build/test results with release evidence.
+For registry activation, release installs dependencies with lock updates allowed; verify the committed release state with `pnpm install --frozen-lockfile`. Otherwise install with the project's frozen package lock. Build and test with existing tooling. Sources does not clean the app's outputs; use a fresh app checkout or its established cleanup procedure separately. Record the app HEAD, source lock, tooling, and build/test results with release evidence.
 
 For configured cross-repository Turbo builds, use `sources turbo run <task>` after source activation and dependency bootstrap. Parent preparation tasks invoke allowed exact pairs with `sources task <package>:<task>...`; use `sources-setup` for the allowlist and per-task hash wiring, and the [Turbo guide](https://github.com/refinio/sources#turbo-bridge) for details. Keep artifact/install refresh explicit and source selection, contents, and configuration stable during the build.
 
-The bridge requires active checkouts for every configured package/task, even with a parent filter. A pnpm registry release has no checkout: retain the intended registry selection and use its published-package build path. Do not switch to `sources dev` or substitute an available development checkout to make a release bridge invocation succeed. The bridge does not select modes, fetch inputs, install dependencies, or update pins.
+The bridge requires active checkouts for every configured package/task, even with a parent filter. A pnpm registry release has no checkout: retain the intended registry selection and use its published-package build path. Do not switch to another source selection or substitute an available development checkout to make a release bridge invocation succeed. The bridge does not select modes, fetch inputs, install dependencies, or update pins.
 
 Report failures and the suggested repair command; rerun activation after fixing the cause. Return to development links with `sources dev` when requested. Do not publish artifacts or create a release unless authorized. See the [README](https://github.com/refinio/sources#readme) for details.

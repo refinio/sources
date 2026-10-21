@@ -58,16 +58,29 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Activate pinned Git sources and install configured pnpm package releases
+    /// Activate pinned Git checkouts or published registry packages
     Release {
         #[arg(long, conflicts_with = "offline")]
         clean: bool,
+        /// Select pinned Git checkouts (the default)
+        #[arg(long, conflicts_with = "registry")]
+        git: bool,
+        /// Select pinned registry packages, retaining Git selection for other sources
+        #[arg(long)]
+        registry: bool,
         #[arg(long)]
         offline: bool,
     },
     /// Capture development HEADs or update selected source pins
     Lock {
+        #[arg(required_if_eq("registry", "true"))]
         pins: Vec<String>,
+        /// Capture or update Git commit pins (the default)
+        #[arg(long, conflicts_with = "registry")]
+        git: bool,
+        /// Pin exact package versions using <package>:<version>
+        #[arg(long)]
+        registry: bool,
         #[arg(long)]
         check: bool,
     },
@@ -154,12 +167,26 @@ fn execute(cli: Cli) -> Result<i32> {
                 }
                 Commands::Fetch { names } => commands::fetch(&project, &names)?,
                 Commands::CheckRelease => commands::check_release(&project)?,
-                Commands::Lock { pins, check } => commands::lock(&project, &pins, check)?,
+                Commands::Lock {
+                    pins,
+                    check,
+                    registry,
+                    ..
+                } => {
+                    if registry {
+                        commands::lock_registry(&project, &pins, check)?;
+                    } else {
+                        commands::lock(&project, &pins, check)?;
+                    }
+                }
                 Commands::Dev => workspace::dev(&project)?,
                 Commands::Status { json } => return workspace::status(&project, json),
-                Commands::Release { clean, offline } => {
-                    workspace::release(&project, clean, offline)?
-                }
+                Commands::Release {
+                    clean,
+                    offline,
+                    registry,
+                    ..
+                } => workspace::release(&project, clean, offline, registry)?,
                 _ => unreachable!(),
             }
         }

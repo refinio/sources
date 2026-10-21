@@ -17,7 +17,8 @@ pub struct Plan {
     workspace: PathBuf,
     contents: String,
     packages: BTreeSet<String>,
-    release: bool,
+    repair: String,
+    install: bool,
     offline: bool,
 }
 
@@ -168,35 +169,16 @@ fn check_members(root: &Path, packages: &BTreeSet<String>) -> Result<()> {
 }
 
 impl Plan {
-    pub fn prepare(project: &Project, release: bool, offline: bool) -> Result<Option<Self>> {
+    pub fn prepare(project: &Project, registry: bool, offline: bool) -> Result<Option<Self>> {
+        let pins = project.pins(false)?;
         let mut references = BTreeMap::new();
         for (name, source) in &project.config.sources {
             for (package, mapping) in &source.pnpm {
-                if !release {
-                    let checkout = project.dev(name)?;
-                    let package_root = fs::canonicalize(checkout.join(&mapping.path))
-                        .with_context(|| {
-                            format!(
-                                "{name}: missing pnpm package path {}",
-                                mapping.path.display()
-                            )
-                        })?;
-                    ensure!(
-                        package_root.starts_with(fs::canonicalize(&checkout)?),
-                        "{name}: pnpm package path escapes the development checkout"
-                    );
-                    let path = package_root.join("package.json");
-                    let manifest: Value = config::read_json(&path)?;
-                    ensure!(
-                        manifest["name"].as_str() == Some(package),
-                        "{name}: {} must declare package name {package}",
-                        path.display()
-                    );
-                }
                 references.insert(
                     package.clone(),
-                    if release {
-                        mapping.version.clone()
+                    if registry {
+                        pins.sources.get(name).and_then(|entry| entry.pnpm.get(package))
+                            .with_context(|| format!("missing registry pin for {package}; run sources lock --registry {package}:<version>"))?.clone()
                     } else {
                         dev_reference(project, name, &mapping.path)?
                     },
@@ -223,6 +205,24 @@ impl Plan {
             }
         };
         validate_overrides(&overrides, &packages)?;
+        // Reusing file references must not refresh the dependency lock merely
+        // because the stable link now points to another checkout.
+        let same_references = references.iter().all(|(package, reference)| {
+            overrides
+                .get(package.as_str())
+                .is_some_and(|value| value.yaml_eq(reference))
+        });
+        let lock_matches = workspace(&project.root.join("pnpm-lock.yaml"))
+            .ok()
+            .and_then(|(_, root)| root.get_mapping("overrides"))
+            .is_some_and(|overrides| {
+                references.iter().all(|(package, reference)| {
+                    overrides
+                        .get(package.as_str())
+                        .is_some_and(|value| value.yaml_eq(reference))
+                })
+            });
+        let install = registry || !same_references || !lock_matches;
         for (package, reference) in references {
             overrides.set(package.as_str(), reference.as_str());
         }
@@ -234,13 +234,22 @@ impl Plan {
             workspace: path,
             contents: yaml.to_string(),
             packages,
-            release,
+            repair: if registry {
+                "sources release --registry"
+            } else {
+                "pnpm install --no-frozen-lockfile, then sources dev or sources release --git"
+            }
+            .into(),
+            install,
             offline,
         }))
     }
 
     pub fn apply(self) -> Result<()> {
         check_members(&self.root, &self.packages)?;
+        if !self.install {
+            return Ok(());
+        }
         ordinary_file(&self.workspace)?;
         let mut temporary = tempfile::NamedTempFile::new_in(&self.root)?;
         temporary.write_all(self.contents.as_bytes())?;
@@ -253,11 +262,7 @@ impl Plan {
         if self.offline {
             command.arg("--offline");
         }
-        let repair = if self.release {
-            "sources release"
-        } else {
-            "sources dev"
-        };
+        let repair = &self.repair;
         let status = crate::run::wait_command(&mut command, "pnpm install")
             .with_context(|| format!("cannot complete pnpm install; rerun {repair}"))?;
         ensure!(
@@ -269,6 +274,7 @@ impl Plan {
 }
 
 pub fn source_mode(project: &Project, name: &str) -> Result<String> {
+    let pins = project.pins(false)?;
     let source = project
         .config
         .sources
@@ -294,8 +300,16 @@ pub fn source_mode(project: &Project, name: &str) -> Result<String> {
             .and_then(|overrides| overrides.get(package.as_str()));
         modes.insert(match reference {
             None => "unconfigured",
-            Some(value) if value.yaml_eq(&mapping.version) => "release",
-            Some(value) if value.yaml_eq(&dev_reference(project, name, &mapping.path)?) => "dev",
+            Some(value)
+                if pins
+                    .sources
+                    .get(name)
+                    .and_then(|entry| entry.pnpm.get(package))
+                    .is_some_and(|version| value.yaml_eq(version)) =>
+            {
+                "registry"
+            }
+            Some(value) if value.yaml_eq(&dev_reference(project, name, &mapping.path)?) => "file",
             Some(_) => "mixed",
         });
     }
@@ -305,4 +319,54 @@ pub fn source_mode(project: &Project, name: &str) -> Result<String> {
         "mixed"
     }
     .into())
+}
+
+/// Validate package paths in the checkout selected by this operation.
+pub fn validate_packages(project: &Project, managed: bool) -> Result<()> {
+    for (name, source) in &project.config.sources {
+        if source.pnpm.is_empty() {
+            continue;
+        }
+        let checkout = if managed {
+            project.managed(name)
+        } else {
+            project.dev(name)?
+        };
+        for (package, mapping) in &source.pnpm {
+            let package_root =
+                fs::canonicalize(checkout.join(&mapping.path)).with_context(|| {
+                    format!(
+                        "{name}: missing pnpm package path {}",
+                        mapping.path.display()
+                    )
+                })?;
+            ensure!(
+                package_root.starts_with(fs::canonicalize(&checkout)?),
+                "{name}: pnpm package path escapes the selected checkout"
+            );
+            let path = package_root.join("package.json");
+            let manifest: Value = config::read_json(&path)?;
+            ensure!(
+                manifest["name"].as_str() == Some(package),
+                "{name}: {} must declare package name {package}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn download(project: &Project, packages: &[String]) -> Result<()> {
+    check_version(&project.root)?;
+    let status = crate::run::wait_command(
+        pnpm_command(&project.root)
+            .args(["store", "add"])
+            .args(packages),
+        "pnpm store add",
+    )?;
+    ensure!(
+        status.success(),
+        "registry download failed; lockfile unchanged; rerun sources lock --registry --check with the selected versions"
+    );
+    Ok(())
 }

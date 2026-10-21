@@ -24,9 +24,6 @@ pub fn fetch(project: &Project, names: &[String]) -> Result<()> {
             project.config.sources.contains_key(name),
             "unknown source {name}"
         );
-        if project.config.sources[name].registry_release() {
-            continue;
-        }
         let path = project.managed(name);
         if path.exists() {
             let repo = Git::at(&path);
@@ -35,14 +32,12 @@ pub fn fetch(project: &Project, names: &[String]) -> Result<()> {
         }
     }
     for name in selected {
-        if project.config.sources[&name].registry_release() {
-            println!("{name}: package release inputs are installed by sources release using pnpm");
-            continue;
-        }
         let revision = ensure_revision(
             &project.managed(&name),
             &project.config.sources[&name].url,
-            pins.sources.get(&name).map(String::as_str),
+            pins.sources
+                .get(&name)
+                .and_then(|entry| entry.git.as_deref()),
             Acquisition::Refresh,
             &project.internal(),
         )
@@ -57,9 +52,6 @@ pub fn fetch(project: &Project, names: &[String]) -> Result<()> {
 pub fn check_release(project: &Project) -> Result<()> {
     let pins = project.pins(true)?;
     for (name, source) in &project.config.sources {
-        if source.registry_release() {
-            continue;
-        }
         let path = project.managed(name);
         if path.exists() {
             let repo = Git::at(&path);
@@ -71,16 +63,10 @@ pub fn check_release(project: &Project) -> Result<()> {
         }
     }
     for (name, source) in &project.config.sources {
-        if source.registry_release() {
-            println!(
-                "{name}: package release inputs are installed by sources release using pnpm; registry readiness not checked"
-            );
-            continue;
-        }
         let revision = ensure_revision(
             &project.managed(name),
             &source.url,
-            Some(&pins.sources[name]),
+            pins.sources[name].git.as_deref(),
             Acquisition::EnsureCached,
             &project.internal(),
         )
@@ -93,17 +79,10 @@ pub fn check_release(project: &Project) -> Result<()> {
 }
 
 pub fn lock(project: &Project, updates: &[String], check: bool) -> Result<()> {
-    let mut pins = if updates.is_empty() {
-        config::Pins::default()
-    } else {
-        project.pins(false)?
-    };
+    let mut pins = project.pins(false)?;
     let mut proposed = Vec::new();
     if updates.is_empty() {
         for (name, source) in &project.config.sources {
-            if source.registry_release() {
-                continue;
-            }
             let repo = Git::at(&project.dev(name)?);
             repo.validate(&source.url, false)
                 .with_context(|| format!("{name}: invalid development checkout"))?;
@@ -128,10 +107,6 @@ pub fn lock(project: &Project, updates: &[String], check: bool) -> Result<()> {
                 .sources
                 .get(name)
                 .with_context(|| format!("unknown source {name}"))?;
-            ensure!(
-                !source.registry_release(),
-                "{name}: pnpm package release versions are configured in .sources.conf; no Git pin is used"
-            );
             ensure!(seen.insert(name), "duplicate pin update for {name}");
             if let Some(tag) = input.strip_prefix("tag=") {
                 if check {
@@ -252,7 +227,42 @@ pub fn lock(project: &Project, updates: &[String], check: bool) -> Result<()> {
         } else {
             commit
         };
-        pins.sources.insert(name, commit);
+        pins.sources.entry(name).or_default().git = Some(commit);
+    }
+    config::write_json(&project.root.join(LOCK), &pins)?;
+    println!("Updated {LOCK}");
+    Ok(())
+}
+
+/// Update package pins independently, optionally downloading releases before writing.
+pub fn lock_registry(project: &Project, updates: &[String], check: bool) -> Result<()> {
+    let mut pins = project.pins(false)?;
+    let mut seen = BTreeSet::new();
+    let mut packages = Vec::new();
+    for update in updates {
+        let (package, version) = update
+            .rsplit_once(':')
+            .context("registry pins must use <package>:<version>")?;
+        ensure!(seen.insert(package), "duplicate package pin for {package}");
+        let (name, _) = project
+            .config
+            .sources
+            .iter()
+            .find(|(_, source)| source.pnpm.contains_key(package))
+            .with_context(|| format!("unknown managed package {package}"))?;
+        ensure!(
+            semver::Version::parse(version).is_ok(),
+            "expected exact package version for {package}, such as 1.2.3"
+        );
+        pins.sources
+            .entry(name.clone())
+            .or_default()
+            .pnpm
+            .insert(package.into(), version.into());
+        packages.push(format!("{package}@{version}"));
+    }
+    if check {
+        crate::pnpm::download(project, &packages)?;
     }
     config::write_json(&project.root.join(LOCK), &pins)?;
     println!("Updated {LOCK}");

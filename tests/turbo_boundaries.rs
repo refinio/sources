@@ -58,8 +58,7 @@ fn task_does_not_fall_back_to_an_available_dev_checkout_for_registry_selection()
     let path = t.f.app.join(".sources.conf");
     let mut config: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    config["sources"]["shared"]["pnpm"] =
-        json!({"@example/protocol":{"path":"packages/protocol","version":"1.2.3"}});
+    config["sources"]["shared"]["pnpm"] = json!({"@example/protocol":{"path":"packages/protocol"}});
     write_json(&path, &config);
     write_json(
         &t.f.app.join("package.json"),
@@ -70,6 +69,12 @@ fn task_does_not_fall_back_to_an_available_dev_checkout_for_registry_selection()
         "packages: []\noverrides:\n  '@example/protocol': 1.2.3\n",
     )
     .unwrap();
+    success(
+        t.cli()
+            .args(["lock", "--registry", "@example/protocol:1.2.3"])
+            .output()
+            .unwrap(),
+    );
     remove_link(&t.f.app.join("sources/shared"));
     failure(
         t.cli()

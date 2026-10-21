@@ -98,7 +98,7 @@ sources lock --check
 git diff -- .sources.lock
 ```
 
-The generated lock is JSON with `version: 1` and a `sources` object mapping source names to full commit object IDs. Review and commit it with the consuming app changes. A lock captures committed revisions only. Dirty development checkouts produce warnings; their uncommitted edits are excluded.
+The generated lock is JSON with `version: 2` and a `sources` object mapping source names to objects containing `git` commit IDs and optional `pnpm` package versions. Review and commit it with the consuming app changes. A lock captures committed revisions only. Dirty development checkouts produce warnings; their uncommitted edits are excluded.
 
 To update one pin, replace `<commit>` with a full or locally unambiguous abbreviated commit ID:
 
@@ -130,34 +130,56 @@ sources status
 
 ## pnpm local and published packages
 
-For a pnpm project, opt a source into registry releases by adding its package names, paths within the development checkout, and exact published versions:
+For a pnpm project, declare package names and paths inside the source repository:
 
 ```json
-"library": {
-  "url": "https://github.com/your-org/library.git",
+{
+  "url": "https://github.com/example/sdk.git",
   "pnpm": {
-    "@your-org/core": {"path": "packages/core", "version": "1.2.3"},
-    "@your-org/ui": {"path": "packages/ui", "version": "2.0.0"}
+    "@example/core": {"path": "packages/core"},
+    "@example/ui": {"path": "packages/ui"}
   }
 }
 ```
 
-Place this entry inside `.sources.conf`'s `sources` map. Require pnpm 10.15 or newer, a root `package.json`, and `pnpm-workspace.yaml`. Consumers keep ordinary dependencies by package name. Keep these external packages out of pnpm workspace globs, including broad globs over `sources/`. Move legacy `package.json` pnpm overrides into the workspace YAML first.
+Place this entry in `.sources.conf`'s `sources` map. Git pins and published versions live together in the committed `.sources.lock`:
 
-pnpm file paths must be valid Unicode and cannot contain literal Unix backslashes. These pnpm restrictions do not apply to Git-only sources.
-
-```sh
-sources dev       # file: overrides through local source links, then pnpm install
-sources release   # exact registry overrides, then pnpm install
+```json
+{
+  "version": 2,
+  "sources": {
+    "sdk": {
+      "git": "<full commit SHA>",
+      "pnpm": {"@example/core": "1.2.3", "@example/ui": "2.0.0"}
+    }
+  }
+}
 ```
 
-Sources manages the corresponding root `overrides` in `pnpm-workspace.yaml`, including references between managed packages. It preserves unrelated settings and comments. This selection applies throughout the dependency graph. Both commands run `pnpm install --no-frozen-lockfile` and may change `pnpm-lock.yaml`; consumer `package.json` dependency declarations stay intact. Review and commit release-mode workspace configuration and the pnpm lock together. CI can then verify them with `pnpm install --frozen-lockfile`.
+Update either selection independently:
 
-Published-package sources do not need a Git pin, development mapping, or managed clone for release mode. Other sources in the same project can keep using exact Git commits. Set package release versions explicitly in `.sources.conf`; switching never selects `latest` or changes these versions. `lock`, `fetch`, and `check-release` manage Git inputs only.
+```sh
+sources lock --git sdk:<commit> --check
+sources lock --registry @example/core:1.2.3 @example/ui:2.0.0 --check
+```
 
-`release --offline` uses pnpm's offline store and existing Git caches. `--clean` clears Sources state, leaving the app's `node_modules`, store, and outputs to pnpm and existing build tooling. pnpm installation follows the project's lifecycle-script settings. Its `file:` dependencies may need reinstalling after new files, atomic saves, or generated output changes; they do not guarantee live symlink updates.
+Git is the default for `lock` and `release`. Git locking also accepts `sdk:tag=v1.2.3`; without arguments it captures all development HEADs, preserving package pins. Registry locking requires explicit package versions and preserves Git pins. Registry `--check` downloads the selected archives into pnpm's store before writing; failures leave `.sources.lock` unchanged. It does not install app dependencies or change the pnpm lock. Without `--check`, registry locking is local and does not require pnpm. Registry URLs, scope mappings, and authentication remain in pnpm configuration.
 
-`status` reports selected references, not installed-package verification. `sources run` requires a checkout, so use `sources dev` before running a command in a source currently selected as a registry release. If installation fails, fix the cause and rerun the intended Sources command.
+```sh
+sources dev                 # Local checkout through stable file: paths
+sources release --git       # Pinned checkout through the same file: paths
+sources release --registry  # Locked published versions, then pnpm install
+```
+
+Require pnpm 10.15+, root `package.json`, and `pnpm-workspace.yaml`. Keep mapped packages outside workspace globs. Consumers retain ordinary package dependencies; Sources manages their YAML `overrides` across the dependency graph. Move legacy `package.json` pnpm overrides into workspace YAML first. Unrelated settings and comments are preserved. pnpm file paths must be valid Unicode and cannot contain literal Unix backslashes.
+
+Initial file setup and transitions between registry and file references run `pnpm install --no-frozen-lockfile` and may update `pnpm-lock.yaml`. Once file overrides and the pnpm lock agree, local-to-Git and Git-to-local switching changes only the checkout links and leaves both dependency files untouched. Refresh installed file packages explicitly after manifest or generated-file changes. File references do not guarantee live updates.
+
+Registry activation always installs, allowing failed installs to be retried. Sources without package mappings retain pinned Git checkouts in registry mode. Switching never changes `.sources.lock`. Review and commit the selected workspace configuration and pnpm lock alongside Sources pins; CI can verify with `pnpm install --frozen-lockfile`.
+
+Registry activation needs no local mapping or Git pin for mapped sources. `--offline` uses pnpm's store and Git caches. `--clean` discards Sources state but leaves app dependencies, store, and outputs to existing tooling. `fetch` and `check-release` handle Git inputs for all sources. `status` reports both pins and selected references, not installed-package correctness. Checkout commands work with local or pinned Git selections; use `sources dev` or `sources release --git` before running them for registry-selected sources.
+
+This intentionally replaces lock format 1. Convert old source strings to objects with a `git` field and set lock version 2, or remove the old lock and repin. Remove package `version` fields from `.sources.conf` and pin them with `sources lock --registry`.
 
 ## Turbo bridge
 
@@ -196,10 +218,12 @@ The outer lock is released before parent Turbo starts so nested task calls work.
 | `setup` | Create missing configuration, directories, and ignore entries. |
 | `check` | Validate all development mappings and repository identities locally. |
 | `dev` | Select validated development checkouts; install configured pnpm file dependencies. |
-| `lock [name:commit or name:tag=tag ...] [--check]` | Capture development HEADs or update selected commit/tag pins atomically. `--check` caches inputs and selects named tags from upstream. |
+| `lock [--git] [name:commit or name:tag=tag ...] [--check]` | Capture development HEADs or update selected commit/tag pins atomically. `--check` caches inputs and selects named tags from upstream. |
+| `lock --registry package:version... [--check]` | Pin exact package versions; `--check` downloads releases before writing. |
 | `fetch [name ...]` | Contact selected upstreams and cache locked revisions, or default-branch tips for unpinned sources. Preserve existing checkout HEADs and links. |
 | `check-release` | Cache complete Git release inputs without activating them; registry readiness is not checked. |
-| `release` | Activate pinned Git checkouts and install configured exact pnpm package releases. |
+| `release [--git]` | Activate pinned Git checkouts through stable paths. |
+| `release --registry` | Select locked package versions, install with pnpm, and activate other sources through Git. |
 | `release --clean` | Recreate disposable managed checkouts from upstream and activate the lock. |
 | `release --offline` | Activate complete cached inputs with no tool-initiated network access. Cannot combine with `--clean`. |
 | `status [--json]` | Inspect links, mode, commits, changes, and local cache readiness. JSON has a versioned top-level schema. |

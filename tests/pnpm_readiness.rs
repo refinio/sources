@@ -1,5 +1,5 @@
 mod common;
-use common::{Fixture, failure};
+use common::{Fixture, failure, success};
 use serde_json::json;
 
 #[test]
@@ -8,19 +8,27 @@ fn published_release_needs_pnpm_configuration_instead_of_a_git_commit_pin() {
     f.configure(
         json!({"library": {
             "url": "https://example.invalid/team/library",
-            "pnpm": {"@example/library": {"path": ".", "version": "1.2.3"}}
+            "pnpm": {"@example/library": {"path": "."}}
         }}),
         json!({}),
     );
-    failure(f.cli().arg("release").output().unwrap(), "package.json");
+    success(
+        f.cli()
+            .args(["lock", "--registry", "@example/library:1.2.3"])
+            .output()
+            .unwrap(),
+    );
+    failure(
+        f.cli().args(["release", "--registry"]).output().unwrap(),
+        "package.json",
+    );
     assert!(!f.app.join(".sources/checkouts").exists());
-    assert!(!f.app.join(".sources.lock").exists());
+    assert!(f.app.join(".sources.lock").exists());
 }
 
 #[cfg(unix)]
 #[test]
 fn pnpm_rejects_unix_backslash_paths_before_creating_links() {
-    use common::success;
     let f = Fixture::new();
     let dev = f.repo("dev");
     let upstream = "https://example.invalid/team/library";
@@ -32,7 +40,7 @@ fn pnpm_rejects_unix_backslash_paths_before_creating_links() {
     .unwrap();
     f.configure(
         json!({"library": {"url": upstream, "pnpm": {
-            "@example/library": {"path": ".", "version": "1.2.3"}
+            "@example/library": {"path": "."}
         }}}),
         json!({"library": dev}),
     );

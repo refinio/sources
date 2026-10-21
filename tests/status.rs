@@ -22,7 +22,7 @@ fn status_derives_mode_from_links_and_reports_broken_targets_with_repair_command
     );
     let out = success(f.cli().args(["status", "--json"]).output().unwrap());
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["version"], 1);
+    assert_eq!(value["version"], 2);
     assert_eq!(value["mode"], "unconfigured");
     success(f.cli().arg("dev").output().unwrap());
     std::fs::write(dev.join("tracked.txt"), "dirty\n").unwrap();
@@ -98,7 +98,7 @@ fn status_reports_incomplete_recursive_cache_after_failed_fetch_without_activati
     f.configure(json!({"a": {"url": parent}}), json!({}));
     std::fs::write(
         f.app.join(".sources.lock"),
-        json!({"version": 1, "sources": {"a": pin}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": pin}}}).to_string(),
     )
     .unwrap();
     common::failure(f.cli().arg("fetch").output().unwrap(), "submodule");
