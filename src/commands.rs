@@ -144,6 +144,7 @@ pub fn lock(project: &Project, updates: &[String], check: bool) -> Result<()> {
                     continue;
                 }
                 let mut commit = None;
+                let mut errors = Vec::new();
                 let mut candidates = vec![(project.managed(name), true)];
                 if let Ok(dev) = project.dev(name) {
                     candidates.push((dev, false));
@@ -153,7 +154,10 @@ pub fn lock(project: &Project, updates: &[String], check: bool) -> Result<()> {
                         continue;
                     }
                     let repo = Git::at(&path);
-                    repo.validate(&source.url, managed)?;
+                    if let Err(error) = repo.validate(&source.url, managed) {
+                        errors.push(format!("{error:#}"));
+                        continue;
+                    }
                     if let Some(candidate) = repo.resolve_tag(tag)? {
                         if let Some(previous) = &commit {
                             ensure!(
@@ -170,7 +174,7 @@ pub fn lock(project: &Project, updates: &[String], check: bool) -> Result<()> {
                     }
                 }
                 proposed.push((name.to_owned(), commit.with_context(|| format!(
-                    "{name}: cannot resolve tag {tag:?} locally; use --check to fetch the exact upstream tag"
+                    "{name}: cannot resolve tag {tag:?} locally; use --check to fetch the exact upstream tag\n{}", errors.join("\n")
                 ))?));
                 continue;
             }

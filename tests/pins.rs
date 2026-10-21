@@ -533,3 +533,46 @@ fn a_long_upstream_tag_can_be_cached_and_selected_again_without_network() {
     success(f.cli().args(["lock", &selector]).output().unwrap());
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
+
+#[test]
+fn a_local_development_tag_can_be_pinned_despite_a_broken_managed_cache() {
+    let f = Fixture::new();
+    let dev = f.repo("development");
+    let pin = f.git(&dev, &["rev-parse", "HEAD"]);
+    f.git(&dev, &["tag", "release"]);
+    std::fs::write(dev.join("tracked.txt"), "later development\n").unwrap();
+    f.git(&dev, &["commit", "-qam", "later development"]);
+    let head = f.git(&dev, &["rev-parse", "HEAD"]);
+    let url = "https://example.invalid/team/repo";
+    f.git(&dev, &["remote", "add", "origin", url]);
+    f.configure(json!({"a":{"url":url}}), json!({"a":dev}));
+    let cached = f.app.join(".sources/checkouts/a");
+    std::fs::create_dir_all(&cached).unwrap();
+    f.git(&cached, &["init"]);
+    f.git(&cached, &["remote", "add", "origin", url]);
+    let broken_head = b"broken managed HEAD\n";
+    std::fs::write(cached.join(".git/HEAD"), broken_head).unwrap();
+    std::fs::write(cached.join("sentinel.txt"), "leave the cache alone\n").unwrap();
+
+    success(f.cli().args(["lock", "a:tag=release"]).output().unwrap());
+    let path = f.app.join(".sources.lock");
+    let before = std::fs::read(&path).unwrap();
+    let lock: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    assert_eq!(lock["sources"]["a"], pin);
+    assert_eq!(f.git(&dev, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        std::fs::read(cached.join(".git/HEAD")).unwrap(),
+        broken_head
+    );
+    assert_eq!(
+        std::fs::read_to_string(cached.join("sentinel.txt")).unwrap(),
+        "leave the cache alone\n"
+    );
+    assert!(!f.app.join("sources").exists());
+
+    f.git(&dev, &["tag", "-d", "release"]);
+    let output = f.cli().args(["lock", "a:tag=release"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains(cached.to_str().unwrap()));
+    failure(output, "cannot resolve tag");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
