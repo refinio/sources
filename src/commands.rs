@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use sources::acquisition::{Acquisition, ensure_revision};
+use sources::acquisition::{Acquisition, ensure_revision, fetch_tag_commit};
 use sources::config::{self, LOCK, Project};
 use sources::git::Git;
 use std::collections::BTreeSet;
@@ -103,13 +103,54 @@ pub fn lock(project: &Project, updates: &[String], check: bool) -> Result<()> {
         for update in updates {
             let (name, input) = update
                 .rsplit_once(':')
-                .context("pin updates must use <name>:<hash>")?;
+                .context("pin updates must use <name>:<hash> or <name>:tag=<tag>")?;
             let source = project
                 .config
                 .sources
                 .get(name)
                 .with_context(|| format!("unknown source {name}"))?;
             ensure!(seen.insert(name), "duplicate pin update for {name}");
+            if let Some(tag) = input.strip_prefix("tag=") {
+                if check {
+                    let commit = fetch_tag_commit(&project.managed(name), &source.url, tag)
+                        .with_context(|| {
+                            format!("{name}: tag pin validation failed; lockfile unchanged")
+                        })?;
+                    warn_changes(name, &Git::at(&project.managed(name)))?;
+                    proposed.push((name.to_owned(), commit));
+                    continue;
+                }
+                let mut commit = None;
+                let mut candidates = vec![(project.managed(name), true)];
+                if let Ok(dev) = project.dev(name) {
+                    candidates.push((dev, false));
+                }
+                for (path, managed) in candidates {
+                    if !path.exists() {
+                        continue;
+                    }
+                    let repo = Git::at(&path);
+                    repo.validate(&source.url, managed)?;
+                    if let Some(candidate) = repo.resolve_tag(tag)? {
+                        if let Some(previous) = &commit {
+                            ensure!(
+                                previous == &candidate,
+                                "{name}: ambiguous local tag {tag:?}; use --check to select the upstream tag"
+                            );
+                        }
+                        if warn_changes(name, &repo)? {
+                            eprintln!(
+                                "warning: {name}: uncommitted changes are excluded from the locked commit"
+                            );
+                        }
+                        commit = Some(candidate);
+                    }
+                }
+                proposed.push((name.to_owned(), commit.with_context(|| format!(
+                    "{name}: cannot resolve tag {tag:?} locally; use --check to fetch the exact upstream tag"
+                ))?));
+                continue;
+            }
             ensure!(
                 (4..=64).contains(&input.len()) && input.bytes().all(|c| c.is_ascii_hexdigit()),
                 "{name}: expected a hexadecimal commit hash"

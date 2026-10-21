@@ -108,6 +108,14 @@ sources release
 sources status
 ```
 
+To select a lightweight or annotated Git tag, including a GitHub Release's tag:
+
+```sh
+sources lock library:tag=v1.2.3 --check
+```
+
+`--check` selects the configured upstream's exact tag and caches its inputs without changing existing checkout HEADs. The lock stores the peeled full commit ID, so later tag movement does not change release inputs. Without `--check`, tag selection uses existing local tags and managed tag caches without fetching; conflicting local targets fail. Branch names, arbitrary Git revision expressions, and GitHub release assets are not tag selectors.
+
 Only `lock` changes pins. Neither mode switching nor fetching rewrites the lock. Normal release switching retains non-conflicting ignored artifacts, so rebuild dependencies and outputs when needed.
 
 For a release build, start with a clean consuming app checkout and run:
@@ -127,7 +135,7 @@ sources status
 | `setup` | Create missing configuration, directories, and ignore entries. |
 | `check` | Validate all development mappings and repository identities locally. |
 | `dev` | Point workspace links at validated development checkouts. |
-| `lock [name:commit ...] [--check]` | Capture all development HEADs or update selected pins atomically. `--check` caches the proposed managed inputs before writing. |
+| `lock [name:commit or name:tag=tag ...] [--check]` | Capture development HEADs or update selected commit/tag pins atomically. `--check` caches inputs and selects named tags from upstream. |
 | `fetch [name ...]` | Contact selected upstreams and cache locked revisions, or default-branch tips for unpinned sources. Preserve existing checkout HEADs and links. |
 | `check-release` | Validate a complete lock and cache missing release inputs without activating them. |
 | `release` | Activate locked commits and recursive submodules in managed checkouts, then select their links. |

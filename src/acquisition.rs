@@ -317,6 +317,97 @@ pub fn ensure_revision(
         .parent()
         .and_then(Path::parent)
         .context("invalid managed checkout path")?;
+    let git = prepare_checkout(checkout, upstream, &commit, policy)?;
+    cache_commit(&git, upstream, &commit, policy)?;
+    let gitdir = checkout.join(".git");
+    inspect_revision(&gitdir, upstream, &commit, policy, scratch, managed_root)
+}
+
+/// Fetch an exact tag into managed state without moving a checkout HEAD.
+pub fn fetch_tag_commit(checkout: &Path, upstream: &str, tag: &str) -> Result<String> {
+    let parent = checkout
+        .ancestors()
+        .find(|path| path.is_dir())
+        .context("managed state has no existing parent directory")?;
+    let probe = Git::at(parent);
+    let reference = probe.tag_reference(tag)?;
+    let advertised = probe.network_output(&["ls-remote", "--refs", "--", upstream, &reference])?;
+    ensure!(
+        advertised.status.success(),
+        "cannot inspect upstream tag {tag:?}: {}",
+        redact(String::from_utf8_lossy(&advertised.stderr).trim())
+    );
+    let object = String::from_utf8(advertised.stdout)?
+        .lines()
+        .find_map(|line| {
+            line.split_once('\t')
+                .filter(|(_, name)| *name == reference)
+                .map(|(oid, _)| oid.to_owned())
+        })
+        .with_context(|| format!("upstream has no tag {tag:?}"))?;
+    let git = prepare_checkout(checkout, upstream, &object, Acquisition::EnsureCached)?;
+    let mut fetched = git.network_output(&[
+        "fetch",
+        "--no-tags",
+        "--depth=1",
+        "--recurse-submodules=no",
+        "--",
+        upstream,
+        &reference,
+    ])?;
+    if !fetched.status.success() {
+        let error = String::from_utf8_lossy(&fetched.stderr);
+        if [
+            "does not support shallow",
+            "shallow requests are not supported",
+            "shallow fetching is not supported",
+        ]
+        .iter()
+        .any(|message| error.contains(message))
+        {
+            eprintln!(
+                "warning: compatibility fallback for tag {tag:?} at {}: fetching full history for only the selected tag",
+                redact(upstream)
+            );
+            fetched = git.network_output(&[
+                "fetch",
+                "--no-tags",
+                "--recurse-submodules=no",
+                "--",
+                upstream,
+                &reference,
+            ])?;
+        }
+    }
+    ensure!(
+        fetched.status.success(),
+        "cannot fetch upstream tag {tag:?}: {}",
+        redact(String::from_utf8_lossy(&fetched.stderr).trim())
+    );
+    let commit = git
+        .text(&["rev-parse", "--verify", "FETCH_HEAD^{commit}"])
+        .with_context(|| format!("upstream tag {tag:?} does not identify a commit"))?;
+    let object = git.text(&["rev-parse", "--verify", "FETCH_HEAD"])?;
+    let cached_ref = crate::git::cached_tag_reference(tag);
+    let root = checkout
+        .parent()
+        .and_then(Path::parent)
+        .context("invalid managed checkout path")?;
+    safe_managed_path(&checkout.join(".git").join(&cached_ref), root)?;
+    git.checked(&["update-ref", &cached_ref, &object])?;
+    Ok(commit)
+}
+
+fn prepare_checkout(
+    checkout: &Path,
+    upstream: &str,
+    commit: &str,
+    policy: Acquisition,
+) -> Result<Git> {
+    let managed_root = checkout
+        .parent()
+        .and_then(Path::parent)
+        .context("invalid managed checkout path")?;
     safe_managed_path(checkout, managed_root)?;
     let git = Git::at(checkout);
     if !checkout.join(".git").exists() {
@@ -343,9 +434,7 @@ pub fn ensure_revision(
     }
     git.validate(upstream, true)?;
     validate_gitdir(&checkout.join(".git"), managed_root)?;
-    cache_commit(&git, upstream, &commit, policy)?;
-    let gitdir = checkout.join(".git");
-    inspect_revision(&gitdir, upstream, &commit, policy, scratch, managed_root)
+    Ok(git)
 }
 
 fn safe_relative(path: &Path) -> Result<()> {

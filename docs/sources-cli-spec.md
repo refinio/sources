@@ -210,7 +210,7 @@ If the server cannot serve the required commit directly or shallowly, fetch adve
 
 A commit available in a valid managed clone with the configured upstream is sufficient for pin validation. There is no fresh-clone verification, ancestry proof, or requirement to prove that a cached commit is still downloadable upstream. A commit found only in a development checkout can be locked locally, but `lock --check` must ensure it is also available in the corresponding managed clone. Managed caches are trusted as tool-owned state rather than audited for manual Git object injection.
 
-Commands that permit network access need not contact the upstream again for already cached inputs. `sources fetch` explicitly contacts each selected upstream even when the requested commit is cached. Cache readiness means the required inputs exist locally, not that a pin equals the latest branch head or remains advertised remotely.
+Commands that permit network access need not contact the upstream again for already cached inputs. Explicit tag selection with `sources lock <name>:tag=<tag> --check` contacts upstream to select its current tag target. `sources fetch` explicitly contacts each selected upstream even when the requested commit is cached. Cache readiness means the required inputs exist locally, not that a pin equals the latest branch head or remains advertised remotely.
 
 Successful acquisition caches the complete trees and file contents for each selected revision. Local-only commands, including offline release, must fail on missing required objects instead of attempting a network request.
 
@@ -286,11 +286,15 @@ Fetch all configured sources when no names are given, or only the named sources.
 
 Update Git objects and fetched refs without changing existing parent or submodule worktree HEADs, workspace links, or pins. Newly initialized caches need not have activated worktrees. Unknown names are errors. A failed fetch returns failure and identifies the affected sources.
 
-### `sources lock [<name>:<hash> ...] [--check]`
+### `sources lock [<name>:<hash> | <name>:tag=<tag> ...] [--check]`
 
 With no positional arguments, capture HEAD from every configured development checkout, regardless of active mode. Perform development identity checks and warn prominently for dirty checkouts. The warning must state that uncommitted changes are excluded.
 
 With positional arguments, update only the named pins and preserve others. Accept full commit hashes or unambiguous abbreviated hashes and always store full commit object IDs. Resolve commits using configured development checkouts or managed clones. Ambiguous identifiers and objects that are not commits fail.
+
+Use the explicit `<name>:tag=<tag>` selector to select an exact lightweight or annotated Git tag, including the tag associated with a GitHub Release. Peel the tag to a commit and store only its full commit object ID; release assets and moving tag names are not stored in the lock. Branch names and arbitrary revision expressions are not selectors.
+
+Without `--check`, resolve the exact tag using validated development checkouts and managed tag caches without fetching. Differing local targets are ambiguous and require `--check` or an explicit commit ID. With `--check`, contact the configured upstream and shallow-fetch only that exact tag into managed state, even when a local tag exists. Upstream selection is authoritative; preserve development repositories and ordinary local tag refs. Cache the selected commit and complete recursive inputs without moving parent or submodule HEADs. Later activation uses the immutable pinned commit, even if the tag moves.
 
 Without `--check`, do not fetch. Fail if a supplied hash cannot be resolved locally. Do not require local development mappings for explicitly pinned sources if their hashes can be resolved from managed clones.
 
