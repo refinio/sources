@@ -8,7 +8,7 @@ shims, aliases, deprecation layers, and transitional wrappers. Establish compati
 requirements before adding downstream consumers; explicitly report intentional public
 interface or persisted-format breaks.
 
-Review against docs/sources-cli-spec.md. Managed .sources state and workspace link objects
+Review against docs/sources-cli-spec.md and docs/turbo-integration-spec.md. Managed .sources state and workspace link objects
 are disposable; clean recreation may discard managed edits. Do not request rollback,
 transaction journals, ownership manifests, or independent remote availability proofs.
 Use shallow full checkouts and recursive pinned submodules, never partial clones or blob

@@ -350,13 +350,21 @@ Execute the command and arguments directly, without implicit shell parsing. User
 
 Inspect source cleanliness before and after execution. Return the child's exit status when it ran, including when it left source changes. Failure to start the child is a tool error. No automatic mode switch, fetch, dependency installation, or lock update occurs.
 
+### `sources task <package:task>...`
+
+Run explicitly allowed child Turbo entry points from active source checkouts. The optional per-source `packages` object maps actual Turbo package names to objects with distinct nonempty `tasks` lists. Package ownership and normalized environment identities must be unique. Existing `pnpm` mappings remain independent. Reject unknown fields, package names containing `__`, and names that cannot be represented by the selector/task identity.
+
+Parse selectors at the first colon, preserving colons within task names. Validate every selector, active checkout, and selected executable Turbo task before running any task. Invoke each repository's locally installed Turbo via `pnpm exec turbo`; missing tools or bootstrap are prerequisites, never permission to download a fallback. Use exact package/task pairs and let Turbo schedule its prerequisites. Across sources execute sequentially in source-name order, stopping at the first failure. Preserve the Turbo process's output, status, and existing process supervision. Warn about source changes before and after execution. Do not fetch, switch modes, install dependencies, or update pins.
+
+A registry release has no active checkout and requires `sources dev` first. See [the Turbo bridge contract](turbo-integration-spec.md) for configuration, hashing, and parent workflow details.
+
 ## Failure handling and concurrent operations
 
 Validate configuration, path safety, and relevant inputs before changing links or replacing checkouts. Multi-source changes are not atomic. No rollback, transaction journal, saved previous mode, or backup-clone system is required. A failed command may leave partial state and must never claim success.
 
 Inspect the state relevant to each command on the next invocation. Detect obvious breakage such as invalid Git roots, incomplete checkouts, broken links, or missing required submodule inputs. Error with the affected source and path and a concrete repair suggestion. `sources dev` repairs development links, `sources release` reapplies pins to reusable clones, `sources fetch` obtains missing inputs, and `sources release --clean` recreates broken managed contents. Commands performing the suggested repair may fix the corresponding missing or incomplete state instead of rejecting it first. Do not perform a full repository integrity audit on every invocation.
 
-Use one exclusive operating-system advisory lock per project at `.sources/project.lock`. All project commands acquire it before inspection or mutation, including `sources run` until its direct child exits in an interactive terminal context, or until its dedicated child group finishes without a controlling terminal. `--help` and `--version` need no project lock. Fail immediately when the lock is busy; report the project and suggest retrying after the other command finishes. Do not wait indefinitely or support nested project operations inside `sources run`.
+Use one exclusive operating-system advisory lock per project at `.sources/project.lock`. All project commands acquire it before inspection or mutation, including `sources run` until its direct child exits in an interactive terminal context, or until its dedicated child group finishes without a controlling terminal. `--help` and `--version` need no project lock. Commands fail immediately when the lock is busy and suggest retrying after the other command finishes, except `sources task`, which waits for the same exclusive lock to serialize child Turbo execution. Do not support nested project operations inside `sources run` or inside a child `sources task` execution.
 
 Use a lock held by an open file handle so process termination releases ownership. Do not treat the continued existence of the lock file as a live lock, and do not unlink or replace that file while an operation holds it. Creating the internal directory and lock file is permitted when bootstrapping a project. External editors and manual deletion of managed state are outside the lock's protection; users must not remove the lock file or managed directory during a running command.
 

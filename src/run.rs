@@ -8,6 +8,33 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::Command;
 
 pub fn execute(project: &Project, name: &str, args: &[OsString]) -> Result<i32> {
+    let checkout = active_checkout(project, name)?;
+    let git = Git::at(&checkout);
+    warn_changes(&git, name)?;
+    let mut command = Command::new(&args[0]);
+    command.args(&args[1..]).current_dir(&checkout);
+    let status = wait_command(&mut command, name)?;
+    if let Err(error) = warn_changes(&git, name) {
+        eprintln!(
+            "warning: {name}: cannot inspect source after command: {}",
+            sources::git::redact(&format!("{error:#}"))
+        );
+    }
+    Ok(exit_code(status))
+}
+
+pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    let code = status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
+    #[cfg(not(unix))]
+    let code = status.code().unwrap_or(1);
+    code
+}
+
+/// Resolve an active workspace checkout without selecting, fetching, or installing.
+pub(crate) fn active_checkout(project: &Project, name: &str) -> Result<std::path::PathBuf> {
     let source = project
         .config
         .sources
@@ -16,7 +43,7 @@ pub fn execute(project: &Project, name: &str, args: &[OsString]) -> Result<i32> 
     if source.registry_release() {
         ensure!(
             crate::pnpm::source_mode(project, name)? == "dev",
-            "{name}: published package selection has no active source checkout; run sources dev before sources run"
+            "{name}: published package selection has no active source checkout; run sources dev before executing checkout tasks"
         );
     }
     let link = project.links().join(name);
@@ -71,23 +98,7 @@ pub fn execute(project: &Project, name: &str, args: &[OsString]) -> Result<i32> 
             issues.join("; ")
         );
     }
-    warn_changes(&git, name)?;
-    let mut command = Command::new(&args[0]);
-    command.args(&args[1..]).current_dir(&checkout);
-    let status = wait_command(&mut command, name)?;
-    if let Err(error) = warn_changes(&git, name) {
-        eprintln!(
-            "warning: {name}: cannot inspect source after command: {}",
-            sources::git::redact(&format!("{error:#}"))
-        );
-    }
-    #[cfg(unix)]
-    let code = status
-        .code()
-        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
-    #[cfg(not(unix))]
-    let code = status.code().unwrap_or(1);
-    Ok(code)
+    Ok(checkout)
 }
 
 /// Wait using the same terminal/job supervision policy for every locked command.
@@ -210,7 +221,7 @@ fn wait_group(command: &mut Command, name: &str) -> Result<std::process::ExitSta
     }
 }
 
-fn warn_changes(git: &Git, name: &str) -> Result<()> {
+pub(crate) fn warn_changes(git: &Git, name: &str) -> Result<()> {
     for change in git.changes()? {
         eprintln!("warning: {name}: {} {}", change.status, change.path);
     }
