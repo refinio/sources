@@ -47,4 +47,8 @@ For offline reproduction, use `sources release --offline` only with complete cac
 
 For pnpm integration, release already installs dependencies with lock updates allowed; verify the committed release state with `pnpm install --frozen-lockfile`. Otherwise install with the project's frozen package lock. Build and test with existing tooling. Sources does not clean the app's outputs; use a fresh app checkout or its established cleanup procedure separately. Record the app HEAD, source lock, tooling, and build/test results with release evidence.
 
+For configured cross-repository Turbo builds, use `sources turbo run <task>` after source activation and dependency bootstrap. Parent preparation tasks invoke allowed exact pairs with `sources task <package>:<task>...`; use `sources-setup` for the allowlist and per-task hash wiring, and the [Turbo guide](https://github.com/refinio/sources#turbo-bridge) for details. Keep artifact/install refresh explicit and source selection, contents, and configuration stable during the build.
+
+The bridge requires active checkouts for every configured package/task, even with a parent filter. A pnpm registry release has no checkout: retain the intended registry selection and use its published-package build path. Do not switch to `sources dev` or substitute an available development checkout to make a release bridge invocation succeed. The bridge does not select modes, fetch inputs, install dependencies, or update pins.
+
 Report failures and the suggested repair command; rerun activation after fixing the cause. Return to development links with `sources dev` when requested. Do not publish artifacts or create a release unless authorized. See the [README](https://github.com/refinio/sources#readme) for details.
