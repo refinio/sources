@@ -107,7 +107,7 @@ struct Member {
     name: Option<String>,
 }
 
-fn pnpm_command(root: &Path) -> Command {
+pub(crate) fn pnpm_command(root: &Path) -> Command {
     #[cfg(windows)]
     let program = {
         let search_path = std::env::var_os("PATH").unwrap_or_default();

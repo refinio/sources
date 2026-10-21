@@ -1,6 +1,6 @@
 ---
 name: sources-setup
-description: Adopts and configures Sources for external Git checkouts at stable workspace paths. Use when users request symlinks or external local file/path dependencies, when loose external checkout dependencies are discovered, or when configuring an existing Sources project. Excludes ordinary dependencies within one monorepo.
+description: Adopts and configures Sources for external Git checkouts and cross-repository Turbo task/hash integration. Use when users request symlinks or external local file/path dependencies, when loose external checkout dependencies are discovered, or when configuring an existing Sources project. Excludes ordinary dependencies within one monorepo.
 ---
 
 # Set up Sources
@@ -38,6 +38,13 @@ sources dev
 sources status
 sources run lib -- git status --short
 ```
+
+For cross-repository Turbo task/hash integration, use the Sources bridge:
+
+- In the parent's `.sources.conf`, add actual child package/task allowlists alongside the owning source's `url`, for example `"packages": {"@example/ui": {"tasks": ["build", "pack"]}}`. Preserve any `pnpm` mapping; no child Sources metadata is needed. Package owners and normalized hash-variable names must be unique; raw package names cannot contain `__`.
+- Confirm `sources --help` lists `turbo` and `task`. Require pnpm and locally installed Turbo in the parent and each configured child checkout; bootstrap their dependencies with their existing lockfiles. Sources uses `pnpm exec turbo` and does not install missing tools.
+- In parent Turbo configuration, use an uncached preparation task invoking exact selectors such as `sources task @example/ui:build @example/ui:pack`. Make consuming tasks depend on preparation and declare only the hashes they consume in `env`, for example `SOURCES_EXAMPLE_UI__PACK`. Launch the parent with `sources turbo run build`, forwarding its usual Turbo arguments.
+- Turbo owns graphs, inputs, outputs, and caching. Keep artifact staging and pnpm file-dependency refresh explicit. Keep source selection, contents, and configuration stable during a build; nested task calls serialize automatically. Read the [Turbo guide](https://github.com/refinio/sources#turbo-bridge) and [bridge spec](https://github.com/refinio/sources/blob/main/docs/turbo-integration-spec.md) for wiring and hash naming details.
 
 Ensure `.sources/`, `.sources.local.conf`, and generated workspace links are ignored; commit `.sources.conf`, `.sources.lock`, relevant ignore entries, and changed workspace/package configuration when committing is authorized.
 

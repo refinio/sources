@@ -15,6 +15,8 @@ pub struct Source {
     pub url: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pnpm: BTreeMap<String, PnpmPackage>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub packages: BTreeMap<String, TurboPackage>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -22,6 +24,50 @@ pub struct Source {
 pub struct PnpmPackage {
     pub path: PathBuf,
     pub version: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurboPackage {
+    pub tasks: Vec<String>,
+}
+
+/// Stable environment identity for one exact child Turbo package/task pair.
+pub fn turbo_env_name(package: &str, task: &str) -> Result<String> {
+    ensure!(
+        !package.contains("__"),
+        "Turbo package name {package:?} contains reserved delimiter '__'"
+    );
+    ensure!(
+        !package.is_empty()
+            && !package.starts_with('-')
+            && !package.contains([':', '#'])
+            && !package.chars().any(char::is_control),
+        "invalid Turbo package name {package:?}: use an exact package name without ':', '#', controls, or a leading '-'"
+    );
+    ensure!(
+        !task.is_empty() && !task.contains('#') && !task.chars().any(char::is_control),
+        "invalid Turbo task name {task:?}: use a nonempty exact task name without '#' or controls"
+    );
+    let component = |value: &str| {
+        value
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .map(str::to_ascii_uppercase)
+            .collect::<Vec<_>>()
+            .join("_")
+    };
+    let package_component = component(package);
+    let task_component = component(task);
+    ensure!(
+        !package_component.is_empty(),
+        "Turbo package {package:?} has an empty normalized environment component"
+    );
+    ensure!(
+        !task_component.is_empty(),
+        "Turbo task {task:?} has an empty normalized environment component"
+    );
+    Ok(format!("SOURCES_{package_component}__{task_component}"))
 }
 
 impl Source {
@@ -276,6 +322,8 @@ impl Project {
             tempfile::tempdir_in(link_parent)?,
         ];
         let mut packages = std::collections::BTreeSet::new();
+        let mut turbo_packages = std::collections::BTreeSet::new();
+        let mut turbo_hashes = BTreeMap::new();
         for (name, source) in &self.config.sources {
             ensure!(
                 !name.is_empty()
@@ -305,6 +353,31 @@ impl Project {
                 !source.url.trim().is_empty(),
                 "missing upstream URL for {name}"
             );
+            for (package, entry) in &source.packages {
+                ensure!(
+                    turbo_packages.insert(package),
+                    "duplicate Turbo package {package}: each package must belong to exactly one source"
+                );
+                ensure!(
+                    !entry.tasks.is_empty(),
+                    "{name}: package {package} must declare at least one Turbo task"
+                );
+                let mut tasks = std::collections::BTreeSet::new();
+                for task in &entry.tasks {
+                    ensure!(
+                        tasks.insert(task),
+                        "{name}: duplicate Turbo task {task:?} for package {package}"
+                    );
+                    let variable = turbo_env_name(package, task)?;
+                    if let Some((previous_package, previous_task)) =
+                        turbo_hashes.insert(variable.clone(), (package, task))
+                    {
+                        bail!(
+                            "Turbo environment name collision {variable}: {previous_package}:{previous_task} and {package}:{task}; rename one configured package or task"
+                        );
+                    }
+                }
+            }
             for (package, mapping) in &source.pnpm {
                 let valid_part = |part: &str| {
                     !part.is_empty()

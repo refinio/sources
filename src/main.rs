@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 mod commands;
 mod pnpm;
 mod run;
+mod turbo;
 mod workspace;
 
 #[derive(Parser)]
@@ -25,6 +26,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run parent Turbo with hashes from every configured child package/task
+    #[command(disable_help_flag = true)]
+    Turbo {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        arguments: Vec<OsString>,
+    },
+    /// Run allowed package:task entry points through the selected child Turbo repositories
+    Task {
+        #[arg(required = true, num_args = 1..)]
+        selectors: Vec<String>,
+    },
     /// Create configuration and ignore entries without downloading sources
     Setup,
     /// Run a command in a source's active workspace checkout
@@ -61,7 +73,7 @@ enum Commands {
     },
 }
 
-fn project_lock(root: &Path) -> Result<File> {
+fn project_lock(root: &Path, wait: bool) -> Result<File> {
     let internal = root.join(".sources");
     config::real_directory_if_present(&internal)?;
     std::fs::create_dir_all(&internal)?;
@@ -79,7 +91,20 @@ fn project_lock(root: &Path) -> Result<File> {
         .create(true)
         .truncate(false)
         .open(&path)?;
-    lock.try_lock().map_err(|error| anyhow::anyhow!("project {} is locked or unavailable: {error}; retry after the other sources command finishes", root.display()))?;
+    if wait {
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                eprintln!("waiting for project lock at {}", root.display());
+                lock.lock().with_context(|| {
+                    format!("cannot wait for project lock at {}", root.display())
+                })?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        lock.try_lock().map_err(|error| anyhow::anyhow!("project {} is locked or unavailable: {error}; retry after the other sources command finishes", root.display()))?;
+    }
     Ok(lock)
 }
 
@@ -90,7 +115,8 @@ fn execute(cli: Cli) -> Result<i32> {
         None if matches!(cli.command, Commands::Setup) => std::fs::canonicalize(start)?,
         None => anyhow::bail!("no {CONFIG} found; run sources setup in the project root"),
     };
-    let _lock = project_lock(&root).context("cannot acquire project lock")?;
+    let lock = project_lock(&root, matches!(cli.command, Commands::Task { .. }))
+        .context("cannot acquire project lock")?;
     match cli.command {
         Commands::Setup => config::setup(root)?,
         Commands::Check => {
@@ -118,6 +144,14 @@ fn execute(cli: Cli) -> Result<i32> {
             project.validate()?;
             match command {
                 Commands::Run { name, command } => return run::execute(&project, &name, &command),
+                Commands::Task { selectors } => return turbo::task(&project, &selectors),
+                Commands::Turbo { arguments } => {
+                    let mut command = turbo::prepare_parent(&project, &arguments)?;
+                    // Parent Turbo may invoke concurrent `sources task` prerequisites.
+                    // Only the metadata snapshot is protected by this outer lock.
+                    drop(lock);
+                    return run::wait_command(&mut command, "parent Turbo").map(run::exit_code);
+                }
                 Commands::Fetch { names } => commands::fetch(&project, &names)?,
                 Commands::CheckRelease => commands::check_release(&project)?,
                 Commands::Lock { pins, check } => commands::lock(&project, &pins, check)?,

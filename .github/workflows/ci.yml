@@ -56,6 +56,16 @@ jobs:
           package-manager-cache: false
       - name: Install pinned pnpm
         run: npm install --global pnpm@10.15.0
+      - name: Install pinned Turbo for acceptance fixtures
+        run: |
+          npm install --prefix "$RUNNER_TEMP/sources-turbo-tools" --no-audit --no-fund turbo@2.7.6
+          node - "$RUNNER_TEMP/sources-turbo-tools" >> "$GITHUB_ENV" <<'JS'
+          const path = require('node:path');
+          const os = { linux: 'linux', darwin: 'darwin', win32: 'windows' }[process.platform];
+          const arch = { x64: '64', arm64: 'arm64' }[process.arch];
+          const binary = process.platform === 'win32' ? 'turbo.exe' : 'turbo';
+          console.log('SOURCES_TEST_TURBO=' + path.resolve(process.argv[2], 'node_modules', `turbo-${os}-${arch}`, 'bin', binary));
+          JS
       - name: Install pinned Rust
         run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
       - name: Restore pinned Git
