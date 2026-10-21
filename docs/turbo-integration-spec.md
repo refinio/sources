@@ -94,6 +94,20 @@ The value is the selected task's Turbo hash, unchanged. Every configured task ge
 
 A Turbo task hash is an input-derived cache key, not a cryptographic checksum of artifact bytes. Correctness depends on the child's declared inputs, task dependencies, relevant environment/toolchain, and deterministic outputs. Sources does not repair an incorrect Turbo graph or promise content integrity from its cache key.
 
+## Composing direct edges across repositories
+
+A child may itself be a Sources project. Keep each consuming repository configured for its direct dependencies. When C consumes B and B consumes A, B's Turbo task declares A's managed hash in `env`, and C declares only B's hash. Changes in A then change B's actual Turbo hash and propagate to C. No ancestor needs to duplicate the transitive configuration.
+
+For each selected child task, Sources first uses Turbo dry-run metadata to discover the managed environment inputs consumed by that task and its transitive Turbo prerequisites. A discovery query supplies the child project's configured variable names with empty placeholder values so Turbo itself expands environment patterns and exclusions. Sources resolves only the consumed configured package/task pairs, then repeats the query with their actual hashes. Global hashed environment declarations also participate. Placeholders never enter exported hashes or task execution.
+
+Both the final metadata query and `sources task` execution use the child's computed snapshot. All inherited `SOURCES_*` values are removed first. Child repositories without `.sources.conf` at their root retain ordinary Turbo behavior with the managed namespace cleared. Missing or unused external environment names do not authorize implicit sources or task selection.
+
+Resolution follows checkout and selected task identities, not repository edges alone. For example, ONE's application task may consume Fotos.core, which consumes ONE's independent foundation task. This repository cycle works when the selected task hash graph is acyclic. A genuine cycle fails before execution, reports the checkout/task path, and asks the caller to remove the cyclic `SOURCES_*` task environment dependency. Independent selected tasks are resolved separately, and shared task snapshots are reused within one CLI invocation.
+
+Hash composition preserves the existing execution lock contract. `sources task` holds the invoking project's lock while child Turbo runs. Prerequisite scripts must not reenter a project lock held by an ancestor process. Such nested project operations remain unsupported, as specified in the core CLI contract. An acyclic hash graph alone does not authorize arbitrary recursive command execution.
+
+The public CLI regression suite covers the natural three-repository chain, leaf edits, downstream hash changes, unchanged cache hits, and restoration after all build outputs are deleted. These guarantees preserve Turbo's ownership of hashes, scheduling, outputs, and caches. This change does not add output staging, package snapshot refresh, or dependency installation.
+
 ## Command: `sources task`
 
 Syntax:
