@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use sources::acquisition::{Acquisition, ensure_revision};
+use sources::acquisition::{Acquisition, ensure_revision, fetch_tag_commit};
 use sources::config::{self, LOCK, Project};
 use sources::git::Git;
 use std::collections::BTreeSet;
@@ -24,6 +24,9 @@ pub fn fetch(project: &Project, names: &[String]) -> Result<()> {
             project.config.sources.contains_key(name),
             "unknown source {name}"
         );
+        if project.config.sources[name].registry_release() {
+            continue;
+        }
         let path = project.managed(name);
         if path.exists() {
             let repo = Git::at(&path);
@@ -32,6 +35,10 @@ pub fn fetch(project: &Project, names: &[String]) -> Result<()> {
         }
     }
     for name in selected {
+        if project.config.sources[&name].registry_release() {
+            println!("{name}: package release inputs are installed by sources release using pnpm");
+            continue;
+        }
         let revision = ensure_revision(
             &project.managed(&name),
             &project.config.sources[&name].url,
@@ -50,6 +57,9 @@ pub fn fetch(project: &Project, names: &[String]) -> Result<()> {
 pub fn check_release(project: &Project) -> Result<()> {
     let pins = project.pins(true)?;
     for (name, source) in &project.config.sources {
+        if source.registry_release() {
+            continue;
+        }
         let path = project.managed(name);
         if path.exists() {
             let repo = Git::at(&path);
@@ -61,6 +71,12 @@ pub fn check_release(project: &Project) -> Result<()> {
         }
     }
     for (name, source) in &project.config.sources {
+        if source.registry_release() {
+            println!(
+                "{name}: package release inputs are installed by sources release using pnpm; registry readiness not checked"
+            );
+            continue;
+        }
         let revision = ensure_revision(
             &project.managed(name),
             &source.url,
@@ -85,6 +101,9 @@ pub fn lock(project: &Project, updates: &[String], check: bool) -> Result<()> {
     let mut proposed = Vec::new();
     if updates.is_empty() {
         for (name, source) in &project.config.sources {
+            if source.registry_release() {
+                continue;
+            }
             let repo = Git::at(&project.dev(name)?);
             repo.validate(&source.url, false)
                 .with_context(|| format!("{name}: invalid development checkout"))?;
@@ -103,13 +122,62 @@ pub fn lock(project: &Project, updates: &[String], check: bool) -> Result<()> {
         for update in updates {
             let (name, input) = update
                 .rsplit_once(':')
-                .context("pin updates must use <name>:<hash>")?;
+                .context("pin updates must use <name>:<hash> or <name>:tag=<tag>")?;
             let source = project
                 .config
                 .sources
                 .get(name)
                 .with_context(|| format!("unknown source {name}"))?;
+            ensure!(
+                !source.registry_release(),
+                "{name}: pnpm package release versions are configured in .sources.conf; no Git pin is used"
+            );
             ensure!(seen.insert(name), "duplicate pin update for {name}");
+            if let Some(tag) = input.strip_prefix("tag=") {
+                if check {
+                    let commit = fetch_tag_commit(&project.managed(name), &source.url, tag)
+                        .with_context(|| {
+                            format!("{name}: tag pin validation failed; lockfile unchanged")
+                        })?;
+                    warn_changes(name, &Git::at(&project.managed(name)))?;
+                    proposed.push((name.to_owned(), commit));
+                    continue;
+                }
+                let mut commit = None;
+                let mut errors = Vec::new();
+                let mut candidates = vec![(project.managed(name), true)];
+                if let Ok(dev) = project.dev(name) {
+                    candidates.push((dev, false));
+                }
+                for (path, managed) in candidates {
+                    if !path.exists() {
+                        continue;
+                    }
+                    let repo = Git::at(&path);
+                    if let Err(error) = repo.validate(&source.url, managed) {
+                        errors.push(format!("{error:#}"));
+                        continue;
+                    }
+                    if let Some(candidate) = repo.resolve_tag(tag)? {
+                        if let Some(previous) = &commit {
+                            ensure!(
+                                previous == &candidate,
+                                "{name}: ambiguous local tag {tag:?}; use --check to select the upstream tag"
+                            );
+                        }
+                        if warn_changes(name, &repo)? {
+                            eprintln!(
+                                "warning: {name}: uncommitted changes are excluded from the locked commit"
+                            );
+                        }
+                        commit = Some(candidate);
+                    }
+                }
+                proposed.push((name.to_owned(), commit.with_context(|| format!(
+                    "{name}: cannot resolve tag {tag:?} locally; use --check to fetch the exact upstream tag\n{}", errors.join("\n")
+                ))?));
+                continue;
+            }
             ensure!(
                 (4..=64).contains(&input.len()) && input.bytes().all(|c| c.is_ascii_hexdigit()),
                 "{name}: expected a hexadecimal commit hash"

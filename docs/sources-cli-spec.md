@@ -6,9 +6,9 @@ Status: behavior contract for the experimental first version.
 
 `sources` manages Git repositories consumed through stable local workspace paths. It lets developers use their existing working checkouts and lets release workflows use exact, committed source revisions.
 
-The tool owns configuration, source commit pins, managed Git clones, and workspace symlinks. It does not install package dependencies, build packages, run tests automatically, package applications, sign artifacts, or publish releases. A release workflow performs those operations after selecting its source inputs.
+The tool owns configuration, source commit pins, managed Git clones, and workspace symlinks. An opt-in pnpm integration also switches managed package references between local files and exact registry versions and runs pnpm installation. It does not build packages, run tests automatically, package applications, sign artifacts, or publish releases.
 
-There are no environment-variable overrides for source locations. Developers configure local paths in `.sources.local.conf`.
+There are no Sources environment-variable overrides for source locations. pnpm retains its native registry, authentication, and installation configuration. Developers configure local paths in `.sources.local.conf`.
 
 ## Implementation and platform decisions
 
@@ -40,10 +40,9 @@ Exit with 0 on success, 1 for operational or validation failure, and 2 for inval
 
 ## Core guarantees
 
-- Workspace package references keep the same paths in development and release mode.
+- Git source workspace references keep the same paths in development and release mode. Opt-in pnpm registry sources instead switch effective dependency references.
 - Development mode links to user-managed checkouts. Release mode links to tool-managed checkouts at locked commits.
-- Switching modes never changes the lockfile.
-- Only an explicit `sources lock` operation changes pins.
+- Switching modes never changes `.sources.lock`; only an explicit `sources lock` operation changes Git pins. Opt-in pnpm switching changes `pnpm-workspace.yaml` and may change `pnpm-lock.yaml`.
 - The tool never resets, stashes, cleans, changes branches in, or deletes a development checkout.
 - Managed checkouts are ordinary Git clones, with one persistent checkout per source. There is no separate bare repository.
 - Normal release switching retains generated files and installed dependencies where Git checkout permits it.
@@ -97,7 +96,7 @@ Ignored local configuration:
 
 Paths may be absolute or relative to the configuration root. They refer to development checkout roots, including valid Git worktrees. They are literal paths, not shell expressions. The tool does not expand environment-variable expressions or execute configuration values.
 
-Every declared source needs a local mapping for `sources check`, `sources dev`, or an unqualified `sources lock`. Release operations do not require development mappings. Unknown source names in local configuration are configuration errors.
+Every declared source needs a local mapping for `sources check` and `sources dev`. An unqualified `sources lock` needs mappings only for Git-release sources. Release operations do not require development mappings. Unknown source names in local configuration are configuration errors.
 
 ### `.sources.lock`
 
@@ -115,11 +114,39 @@ Committed release pins:
 
 Each value is a full Git commit object ID. Branch names, tags, and abbreviated hashes are not stored in the lockfile. Use the repository's object format rather than assuming that every Git object ID is 40 characters.
 
-A complete release lock has exactly one entry per configured source. Missing or obsolete entries fail release validation. A partially populated lockfile is allowed during initial setup or incremental pinning, but cannot authorize release mode.
+A complete Git release lock has one entry per configured Git-release source. Sources with pnpm registry releases do not require a Git pin. Missing or obsolete entries fail release validation. A partially populated lockfile is allowed during initial setup or incremental pinning, but cannot authorize release mode.
 
 The app repository's own commit is recorded by the release workflow. It is not placed inside its own `.sources.lock`, which would create a circular reference.
 
 Lockfile writes use a temporary file and atomic replacement. A validation failure leaves the existing file unchanged. Ordering and formatting are deterministic so reviews show actual pin changes.
+
+### Opt-in pnpm package releases
+
+A source may declare a `pnpm` object mapping published package names to package paths within its development repository and exact release versions:
+
+```json
+{
+  "url": "https://github.com/example/sdk.git",
+  "pnpm": {
+    "@example/core": {"path": "packages/core", "version": "1.2.3"},
+    "@example/ui": {"path": "packages/ui", "version": "2.0.0"}
+  }
+}
+```
+
+An empty or absent `pnpm` mapping retains the Git release workflow. A nonempty mapping selects registry releases for that source. The repository URL and local mapping still identify its development checkout. Package paths must be relative, stay within that checkout, and contain a `package.json` with the declared package name. Package names cannot be managed by multiple sources. Versions must be exact semantic versions, including optional prerelease identifiers, never ranges or moving dist-tags.
+
+pnpm file-reference paths require valid Unicode and reject literal Unix backslashes before link or configuration mutation. Git-only sources retain their native-path support.
+
+Require pnpm 10.15 or newer on PATH, a root `package.json`, and an ordinary root `pnpm-workspace.yaml`. Keep managed packages outside pnpm workspace membership; remove or exclude their generated source paths from workspace package globs. Consumers declare dependencies by package name using normal version specifiers. Sources owns the root workspace `overrides` entries for its declared package names, applying the selection across the dependency graph, including internal dependencies between managed packages. Conflicting scoped overrides and legacy `package.json` pnpm overrides require configuration changes before switching. Preserve unrelated workspace settings, overrides, and comments.
+
+`sources dev` validates the development repositories and package exports, activates development links, sets managed overrides to `file:` references through those stable links, and runs `pnpm install --no-frozen-lockfile`. `sources release` removes the registry source links, sets their overrides to the configured exact versions, and runs the same install. It does not require development mappings, Git pins, managed clones, or source Git network access for registry sources. Other Git sources in a mixed project still activate normally. Commands hold the single project lock through installation and fail if pnpm fails. Rerun the intended command after fixing the reported cause; no rollback is attempted.
+
+The configuration records intended exact package versions; `pnpm-lock.yaml` records resolved packages, integrity, and transitive dependencies. Review and commit the release selection and pnpm lock together. Switching modes may change that lock; it never chooses `latest` or changes the configured release versions. No new Sources lock format is introduced. For reproducible CI, commit the release-mode pnpm configuration and lock and verify them with `pnpm install --frozen-lockfile`.
+
+`sources release --offline` forwards `--offline` to pnpm and requires the registry inputs in its store as well as any Git inputs in Sources caches. `--clean` removes disposable Sources state but does not delete the app's pnpm store, `node_modules`, or outputs. pnpm may run lifecycle scripts according to the project's own settings; its offline flag does not sandbox those scripts. Local `file:` packages follow pnpm's installation semantics; atomic file replacement, added files, and generated outputs can require another install. They are not a guarantee of live symlink updates.
+
+`status` derives registry-source mode from the managed override entries and development links, reports configured package versions, and does not assert that installed dependencies match those references. `run` remains a checkout command; a registry release has no active source checkout and requires `sources dev` first. `lock`, `fetch`, and `check-release` operate on Git sources; package acquisition is performed by the pnpm installation during mode switching.
 
 ## Filesystem layout and ownership
 
@@ -191,7 +218,7 @@ Ordinary checkout may encounter ignored or untracked files that would be overwri
 | --- | --- |
 | `sources setup` | None. |
 | `sources check` | None. |
-| `sources dev` | None. |
+| `sources dev` | No Git fetch; opt-in pnpm installation may use the registry. |
 | `sources status` | None. |
 | `sources run` | None by the tool; the child command may use the network. |
 | `sources lock` | None unless `--check` is present. |
@@ -210,7 +237,7 @@ If the server cannot serve the required commit directly or shallowly, fetch adve
 
 A commit available in a valid managed clone with the configured upstream is sufficient for pin validation. There is no fresh-clone verification, ancestry proof, or requirement to prove that a cached commit is still downloadable upstream. A commit found only in a development checkout can be locked locally, but `lock --check` must ensure it is also available in the corresponding managed clone. Managed caches are trusted as tool-owned state rather than audited for manual Git object injection.
 
-Commands that permit network access need not contact the upstream again for already cached inputs. `sources fetch` explicitly contacts each selected upstream even when the requested commit is cached. Cache readiness means the required inputs exist locally, not that a pin equals the latest branch head or remains advertised remotely.
+Commands that permit network access need not contact the upstream again for already cached inputs. Explicit tag selection with `sources lock <name>:tag=<tag> --check` contacts upstream to select its current tag target. `sources fetch` explicitly contacts each selected upstream even when the requested commit is cached. Cache readiness means the required inputs exist locally, not that a pin equals the latest branch head or remains advertised remotely.
 
 Successful acquisition caches the complete trees and file contents for each selected revision. Local-only commands, including offline release, must fail on missing required objects instead of attempting a network request.
 
@@ -286,11 +313,15 @@ Fetch all configured sources when no names are given, or only the named sources.
 
 Update Git objects and fetched refs without changing existing parent or submodule worktree HEADs, workspace links, or pins. Newly initialized caches need not have activated worktrees. Unknown names are errors. A failed fetch returns failure and identifies the affected sources.
 
-### `sources lock [<name>:<hash> ...] [--check]`
+### `sources lock [<name>:<hash> | <name>:tag=<tag> ...] [--check]`
 
-With no positional arguments, capture HEAD from every configured development checkout, regardless of active mode. Perform development identity checks and warn prominently for dirty checkouts. The warning must state that uncommitted changes are excluded.
+With no positional arguments, capture HEAD from every configured Git-release development checkout, regardless of active mode. Skip sources configured for pnpm registry releases; their package versions are set in configuration. Perform development identity checks and warn prominently for dirty checkouts. The warning must state that uncommitted changes are excluded.
 
 With positional arguments, update only the named pins and preserve others. Accept full commit hashes or unambiguous abbreviated hashes and always store full commit object IDs. Resolve commits using configured development checkouts or managed clones. Ambiguous identifiers and objects that are not commits fail.
+
+Use the explicit `<name>:tag=<tag>` selector to select an exact lightweight or annotated Git tag, including the tag associated with a GitHub Release. Peel the tag to a commit and store only its full commit object ID; release assets and moving tag names are not stored in the lock. Branch names and arbitrary revision expressions are not selectors.
+
+Without `--check`, resolve the exact tag using validated development checkouts and managed tag caches without fetching. Differing local targets are ambiguous and require `--check` or an explicit commit ID. With `--check`, contact the configured upstream and shallow-fetch only that exact tag into managed state, even when a local tag exists. Upstream selection is authoritative; preserve development repositories and ordinary local tag refs. Cache the selected commit and complete recursive inputs without moving parent or submodule HEADs. Later activation uses the immutable pinned commit, even if the tag moves.
 
 Without `--check`, do not fetch. Fail if a supplied hash cannot be resolved locally. Do not require local development mappings for explicitly pinned sources if their hashes can be resolved from managed clones.
 
@@ -434,7 +465,7 @@ Inspect fetched refs and object graphs to verify that shallow acquisition avoids
 ## Acceptance criteria
 
 - Setup is repeatable and preserves user configuration.
-- Dev/release switching preserves workspace package paths and never writes the lock.
+- Git dev/release switching preserves workspace package paths and never writes the Sources lock. Opt-in pnpm switching selects file versus exact registry overrides, installs dependencies, and may update the pnpm lock.
 - Mode reporting reflects real links, including manual changes and broken targets.
 - Development checkouts remain untouched by fetches, checkout switching, and clean release operations.
 - Locking supports complete local capture, partial explicit updates, full-hash normalization, dirty warnings, and validation before atomic writes.
@@ -462,4 +493,4 @@ Inspect fetched refs and object graphs to verify that shallow acquisition avoids
 
 ## Implementation boundary
 
-Implementation of version 1 in the standalone refinio/sources repository was authorized on 2026-10-20. The user subsequently authorized public repository visibility, MIT licensing, installers, agent skills, and native binary publication when a release is manually published. This setup does not create a release or migrate consuming workspaces by itself. Integrating the tool into consuming workspaces requires replacing their external workspace paths and tracked symlink assumptions with stable managed paths, and making their package dependency locks reproducible in that layout.
+Implementation of version 1 in the standalone refinio/sources repository was authorized on 2026-10-20. Public repository visibility, MIT licensing, installers, agent skills, and native binary publication when a release is manually published were subsequently authorized. On 2026-10-21 the user authorized named Git release selection and pnpm integration that switches local file dependencies to published releases, including automatic pnpm installation and dependency lockfile changes. This setup does not create a release or migrate consuming workspaces by itself. Integrating the tool into consuming workspaces requires replacing their external workspace paths and tracked symlink assumptions with stable managed paths, and making their package dependency locks reproducible in that layout.

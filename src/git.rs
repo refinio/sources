@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
@@ -232,6 +233,44 @@ impl Git {
         Ok(())
     }
 
+    pub(crate) fn tag_reference(&self, tag: &str) -> Result<String> {
+        let reference = format!("refs/tags/{tag}");
+        if !self
+            .output(&["check-ref-format", &reference])?
+            .status
+            .success()
+        {
+            bail!("invalid tag name {tag:?}; use an exact Git tag name");
+        }
+        Ok(reference)
+    }
+
+    pub fn resolve_tag(&self, tag: &str) -> Result<Option<String>> {
+        let reference = self.tag_reference(tag)?;
+        let mut resolved = None;
+        for reference in [reference, cached_tag_reference(tag)] {
+            let exists = self.output(&["show-ref", "--verify", "--hash", &reference])?;
+            if !exists.status.success() {
+                continue;
+            }
+            let object = String::from_utf8(exists.stdout)?;
+            let commit = self
+                .text(&[
+                    "rev-parse",
+                    "--verify",
+                    &format!("{}^{{commit}}", object.trim()),
+                ])
+                .with_context(|| format!("tag {tag:?} does not identify a commit"))?;
+            if let Some(previous) = &resolved
+                && previous != &commit
+            {
+                bail!("ambiguous local tag {tag:?}; use --check to select the upstream tag");
+            }
+            resolved = Some(commit);
+        }
+        Ok(resolved)
+    }
+
     pub fn resolve_commit(&self, input: &str) -> Result<String> {
         let oid = self.resolve_object(input)?;
         if self.text(&["cat-file", "-t", &oid])? != "commit" {
@@ -334,6 +373,12 @@ impl Git {
             )
         })
     }
+}
+
+pub(crate) fn cached_tag_reference(tag: &str) -> String {
+    // Bound both component and total path length, without tag-prefix conflicts.
+    let key = Sha256::digest(tag.as_bytes());
+    format!("refs/sources/tags/{key:x}")
 }
 
 pub fn redact(text: &str) -> String {

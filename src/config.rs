@@ -13,6 +13,21 @@ pub const LOCK: &str = ".sources.lock";
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pnpm: BTreeMap<String, PnpmPackage>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PnpmPackage {
+    pub path: PathBuf,
+    pub version: String,
+}
+
+impl Source {
+    pub fn registry_release(&self) -> bool {
+        !self.pnpm.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -260,6 +275,7 @@ impl Project {
             tempfile::tempdir_in(self.internal())?,
             tempfile::tempdir_in(link_parent)?,
         ];
+        let mut packages = std::collections::BTreeSet::new();
         for (name, source) in &self.config.sources {
             ensure!(
                 !name.is_empty()
@@ -289,6 +305,35 @@ impl Project {
                 !source.url.trim().is_empty(),
                 "missing upstream URL for {name}"
             );
+            for (package, mapping) in &source.pnpm {
+                let valid_part = |part: &str| {
+                    !part.is_empty()
+                        && part.bytes().all(|b| {
+                            b.is_ascii_lowercase() || b.is_ascii_digit() || b"-_.".contains(&b)
+                        })
+                        && !part.starts_with(['.', '_'])
+                };
+                let valid_name = if let Some(scoped) = package.strip_prefix('@') {
+                    scoped
+                        .split_once('/')
+                        .is_some_and(|(scope, name)| valid_part(scope) && valid_part(name))
+                } else {
+                    valid_part(package)
+                };
+                ensure!(valid_name, "{name}: invalid pnpm package name {package:?}");
+                ensure!(packages.insert(package), "duplicate pnpm package {package}");
+                ensure!(
+                    !mapping.path.as_os_str().is_empty()
+                        && mapping.path.components().all(|part| {
+                            matches!(part, Component::Normal(_) | Component::CurDir)
+                        }),
+                    "{name}: package path for {package} must stay within its source checkout"
+                );
+                ensure!(
+                    semver::Version::parse(&mapping.version).is_ok(),
+                    "{name}: expected exact package version for {package}, such as 1.2.3"
+                );
+            }
             if let Some(dev) = self.local.sources.get(name) {
                 let dev = resolved_path(&self.root.join(dev))?;
                 ensure!(
@@ -304,7 +349,13 @@ impl Project {
         let path = self.root.join(LOCK);
         let pins: Pins = if path.exists() {
             read_json(&path)?
-        } else if complete {
+        } else if complete
+            && self
+                .config
+                .sources
+                .values()
+                .any(|source| !source.registry_release())
+        {
             bail!("missing {LOCK}; run sources lock");
         } else {
             Pins::default()
@@ -327,7 +378,7 @@ impl Project {
         if complete {
             for name in self.config.sources.keys() {
                 ensure!(
-                    pins.sources.contains_key(name),
+                    self.config.sources[name].registry_release() || pins.sources.contains_key(name),
                     "missing lock entry for {name}; run sources lock"
                 );
             }

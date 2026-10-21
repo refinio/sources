@@ -230,6 +230,46 @@ fn a_server_without_shallow_support_uses_a_reported_compatibility_fallback() {
 }
 
 #[test]
+fn exact_tag_selection_reports_a_no_shallow_fallback_without_fetching_unrelated_refs() {
+    let f = Fixture::new();
+    let upstream = f.repo("upstream");
+    std::fs::write(upstream.join("tracked.txt"), "selected release\n").unwrap();
+    f.git(&upstream, &["commit", "-qam", "release"]);
+    let pin = f.git(&upstream, &["rev-parse", "HEAD"]);
+    f.git(&upstream, &["tag", "-a", "v1", "-m", "release"]);
+    std::fs::write(upstream.join("tracked.txt"), "unrelated tip\n").unwrap();
+    f.git(&upstream, &["commit", "-qam", "unrelated"]);
+    let unrelated = f.git(&upstream, &["rev-parse", "HEAD"]);
+    f.git(&upstream, &["tag", "unrelated"]);
+    f.git(&upstream, &["update-server-info"]);
+    let server = DumbHttp::start(&upstream.join(".git"));
+    f.configure(json!({"a":{"url":server.url}}), json!({}));
+    let output = success(
+        f.cli()
+            .args(["lock", "a:tag=v1", "--check"])
+            .output()
+            .unwrap(),
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("compatibility fallback"));
+    let managed = f.app.join(".sources/checkouts/a");
+    let lock: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(f.app.join(".sources.lock")).unwrap()).unwrap();
+    assert_eq!(lock["sources"]["a"], pin);
+    assert_eq!(f.git(&managed, &["cat-file", "-t", &pin]), "commit");
+    assert_eq!(f.git(&managed, &["tag", "--list"]), "");
+    assert!(
+        !f.command("git")
+            .current_dir(&managed)
+            .args(["cat-file", "-e", &unrelated])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(!managed.join("tracked.txt").exists());
+}
+
+#[test]
 fn fallback_finds_a_pin_reachable_only_through_annotated_tag_history() {
     let f = Fixture::new();
     let upstream = f.repo("upstream");

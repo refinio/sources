@@ -49,6 +49,13 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@10.15.0
       - name: Install pinned Rust
         run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
       - name: Restore pinned Git
@@ -78,10 +85,12 @@ jobs:
           rustc --version
           git --version
           python3 --version
+          node --version
+          pnpm --version
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked --no-fail-fast -- --nocapture
-        timeout-minutes: 3
+        timeout-minutes: 8
         env:
           TMPDIR: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
