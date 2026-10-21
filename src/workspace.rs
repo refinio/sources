@@ -101,6 +101,7 @@ fn activate_links(project: &Project, targets: &BTreeMap<String, PathBuf>) -> Res
 
 pub fn dev(project: &Project) -> Result<()> {
     preflight_links(project)?;
+    crate::pnpm::validate_packages(project, false)?;
     let pnpm = crate::pnpm::Plan::prepare(project, false, false)?;
     let mut targets = BTreeMap::new();
     for (name, source) in &project.config.sources {
@@ -144,16 +145,39 @@ fn remove_managed(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn release(project: &Project, clean: bool, offline: bool) -> Result<()> {
-    let pins = project.pins(true)?;
+pub fn release(project: &Project, clean: bool, offline: bool, registry: bool) -> Result<()> {
+    let selection = if registry { " --registry" } else { " --git" };
+    let retry = format!(
+        "sources release{selection}{}",
+        if clean {
+            " --clean"
+        } else if offline {
+            " --offline"
+        } else {
+            ""
+        }
+    );
+    let clean_retry = format!("sources release{selection} --clean");
+    let pins = project.pins(false)?;
+    for (name, source) in &project.config.sources {
+        if !(registry && source.has_packages()) {
+            ensure!(
+                pins.sources
+                    .get(name)
+                    .and_then(|entry| entry.git.as_ref())
+                    .is_some(),
+                "missing lock entry for {name}; run sources lock --git"
+            );
+        }
+    }
     preflight_links(project)?;
-    let pnpm = crate::pnpm::Plan::prepare(project, true, offline)?;
+    let pnpm = crate::pnpm::Plan::prepare(project, registry, offline)?;
     let checkouts = project.internal().join("checkouts");
     if !clean {
         config::real_directory_if_present(&checkouts)?;
     }
     for (name, source) in &project.config.sources {
-        if source.registry_release() && !clean {
+        if registry && source.has_packages() && !clean {
             continue;
         }
         let path = project.managed(name);
@@ -171,9 +195,9 @@ pub fn release(project: &Project, clean: bool, offline: bool) -> Result<()> {
             } else {
                 ensure!(
                     !inspected.with_context(|| format!(
-                        "{name}: invalid managed checkout; run sources release --clean"
+                        "{name}: invalid managed checkout; run {clean_retry}"
                     ))?,
-                    "{name}: managed checkout has source changes; preserve them elsewhere or run sources release --clean"
+                    "{name}: managed checkout has source changes; preserve them elsewhere or run {clean_retry}"
                 );
             }
         }
@@ -189,7 +213,7 @@ pub fn release(project: &Project, clean: bool, offline: bool) -> Result<()> {
     }
     let mut revisions = BTreeMap::new();
     for (name, source) in &project.config.sources {
-        if source.registry_release() {
+        if registry && source.has_packages() {
             continue;
         }
         let policy = if offline {
@@ -200,21 +224,12 @@ pub fn release(project: &Project, clean: bool, offline: bool) -> Result<()> {
         let revision = ensure_revision(
             &project.managed(name),
             &source.url,
-            Some(&pins.sources[name]),
+            pins.sources[name].git.as_deref(),
             policy,
             &project.internal(),
         )
         .with_context(|| {
-            format!(
-                "{name}: release preparation failed; rerun sources release{}",
-                if clean {
-                    " --clean"
-                } else if offline {
-                    " after sources fetch"
-                } else {
-                    " or sources release --clean"
-                }
-            )
+            format!("{name}: release preparation failed; rerun {retry} after sources fetch {name}, or use {clean_retry}")
         })?;
         revisions.insert(name.clone(), revision);
     }
@@ -222,9 +237,12 @@ pub fn release(project: &Project, clean: bool, offline: bool) -> Result<()> {
     for (name, revision) in &revisions {
         let path = project.managed(name);
         activate(&path, revision).with_context(|| {
-            format!("{name}: activation failed; rerun sources release or sources release --clean")
+            format!("{name}: activation failed; rerun {retry} or {clean_retry}")
         })?;
         targets.insert(name.clone(), path);
+    }
+    if !registry {
+        crate::pnpm::validate_packages(project, true)?;
     }
     activate_links(project, &targets)?;
     let installed_pnpm = pnpm.is_some();
@@ -289,28 +307,19 @@ pub fn status(project: &Project, json: bool) -> Result<i32> {
             .map(|path| project.root.join(path));
         let mut row = SourceStatus {
             upstream: redact(&source.url),
-            release_kind: if source.registry_release() {
-                "pnpm"
-            } else {
-                "git"
-            }
-            .into(),
-            release_packages: source
-                .pnpm
-                .iter()
-                .map(|(name, package)| (name.clone(), package.version.clone()))
-                .collect(),
+            release_kind: "git".into(),
+            release_packages: pins
+                .sources
+                .get(name)
+                .map(|entry| entry.pnpm.clone())
+                .unwrap_or_default(),
             pnpm_selection: None,
             workspace_path: path.clone(),
             link_target: None,
             development_path: dev.clone(),
             active_mode: "missing".into(),
             active_commit: None,
-            locked_commit: if source.registry_release() {
-                None
-            } else {
-                pins.sources.get(name).cloned()
-            },
+            locked_commit: pins.sources.get(name).and_then(|entry| entry.git.clone()),
             cached_commit_available: false,
             active_matches_locked: None,
             dirty: false,
@@ -318,15 +327,41 @@ pub fn status(project: &Project, json: bool) -> Result<i32> {
             submodule_issues: Vec::new(),
             errors: Vec::new(),
         };
-        if source.registry_release() {
+        let managed = project.managed(name);
+        if fs::symlink_metadata(&managed).is_ok() {
+            let git = Git::at(&managed);
+            match git.validate(&source.url, true) {
+                Ok(()) => {
+                    if let Some(pin) = &row.locked_commit {
+                        match ensure_revision(
+                            &managed,
+                            &source.url,
+                            Some(pin),
+                            Acquisition::Offline,
+                            &project.internal(),
+                        ) {
+                            Ok(_) => row.cached_commit_available = true,
+                            Err(error) => row.errors.push(redact(&format!(
+                                "locked inputs are not fully cached: {error:#}; run sources fetch"
+                            ))),
+                        }
+                    }
+                }
+                Err(error) => row.errors.push(redact(&format!(
+                    "managed cache needs repair: {error:#}; run sources release --clean"
+                ))),
+            }
+        }
+        if source.has_packages() {
             match crate::pnpm::source_mode(project, name) {
                 Ok(selection) => {
                     row.pnpm_selection = Some(selection.clone());
-                    if selection == "release" {
+                    if selection == "registry" {
+                        row.release_kind = "pnpm".into();
                         active_links += 1;
                         row.active_mode = "release".into();
                         if fs::symlink_metadata(&path).is_ok() {
-                            row.errors.push("published package selection still has a workspace entry; run sources release".into());
+                            row.errors.push("published package selection still has a workspace entry; run sources release --registry".into());
                         }
                         rows.insert(name.clone(), row);
                         continue;
@@ -353,7 +388,7 @@ pub fn status(project: &Project, json: bool) -> Result<i32> {
                     let target = config::resolved_path(&target)?;
                     let managed = config::resolved_path(&project.managed(name))?;
                     let dev_matches = dev.as_ref().map(|path| config::resolved_path(path)).transpose()?.is_some_and(|dev| dev == target);
-                    let managed_mode = target == managed && !source.registry_release();
+                    let managed_mode = target == managed;
                     row.active_mode = if managed_mode { "release" } else if dev_matches { "dev" } else { "unexpected" }.into();
                     ensure!(managed_mode || dev_matches, "unexpected workspace link target; run sources dev or sources release");
                     ensure!(path.exists(), "broken workspace link; run sources dev or sources release --clean");
@@ -376,42 +411,20 @@ pub fn status(project: &Project, json: bool) -> Result<i32> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
             Err(error) => row.errors.push(format!("cannot inspect workspace link: {error}")),
         }
-        if source.registry_release() {
-            if row.active_mode == "dev" && row.pnpm_selection.as_deref() != Some("dev") {
-                row.errors.push("development links and pnpm references disagree; run sources dev or sources release".into());
+        if source.has_packages() {
+            if (row.active_mode == "dev" || row.active_mode == "release")
+                && row.pnpm_selection.as_deref() != Some("file")
+            {
+                row.errors.push("checkout links and pnpm references disagree; run sources dev or sources release".into());
                 row.active_mode = "mixed".into();
             }
-            if row.pnpm_selection.as_deref() == Some("dev") && row.active_mode != "dev" {
+            if row.pnpm_selection.as_deref() == Some("file")
+                && row.active_mode != "dev"
+                && row.active_mode != "release"
+            {
                 row.errors.push(
-                    "pnpm file references have no valid development link; run sources dev".into(),
+                    "pnpm file references have no valid checkout link; run sources dev or sources release --git".into(),
                 );
-            }
-            rows.insert(name.clone(), row);
-            continue;
-        }
-        let managed = project.managed(name);
-        if fs::symlink_metadata(&managed).is_ok() {
-            let git = Git::at(&managed);
-            match git.validate(&source.url, true) {
-                Ok(()) => {
-                    if let Some(pin) = &row.locked_commit {
-                        match ensure_revision(
-                            &managed,
-                            &source.url,
-                            Some(pin),
-                            Acquisition::Offline,
-                            &project.internal(),
-                        ) {
-                            Ok(_) => row.cached_commit_available = true,
-                            Err(error) => row.errors.push(redact(&format!(
-                                "locked inputs are not fully cached: {error:#}; run sources fetch"
-                            ))),
-                        }
-                    }
-                }
-                Err(error) => row.errors.push(redact(&format!(
-                    "managed cache needs repair: {error:#}; run sources release --clean"
-                ))),
             }
         }
         rows.insert(name.clone(), row);
@@ -431,7 +444,7 @@ pub fn status(project: &Project, json: bool) -> Result<i32> {
         }
     }
     let state = Status {
-        version: 1,
+        version: 2,
         project_root: project.root.clone(),
         mode: mode.into(),
         sources: rows,
@@ -446,7 +459,7 @@ pub fn status(project: &Project, json: bool) -> Result<i32> {
                 row.active_mode,
                 if row.dirty { " (source changes)" } else { "" }
             );
-            if row.release_kind == "pnpm" {
+            if row.pnpm_selection.is_some() {
                 println!(
                     "  pnpm references: {}; installed dependencies are not inspected",
                     row.pnpm_selection.as_deref().unwrap_or("unavailable")
@@ -469,15 +482,15 @@ pub fn status(project: &Project, json: bool) -> Result<i32> {
             if let Some(dev) = &row.development_path {
                 println!("  development: {}", dev.display());
             }
-            if row.release_kind == "git" {
+            if row.pnpm_selection.as_deref() != Some("registry") {
                 println!(
                     "  active: {}\n  locked: {}",
                     row.active_commit.as_deref().unwrap_or("unavailable"),
                     row.locked_commit.as_deref().unwrap_or("unpinned")
                 );
                 println!("  locked commit cached: {}", row.cached_commit_available);
-            } else if let Some(commit) = &row.active_commit {
-                println!("  development commit: {commit}");
+            } else if let Some(commit) = &row.locked_commit {
+                println!("  locked Git commit: {commit}");
             }
             if let Some(matches) = row.active_matches_locked {
                 println!("  active matches lock: {matches}");

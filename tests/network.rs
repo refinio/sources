@@ -13,7 +13,7 @@ fn loopback_fetch_is_shallow_and_cached_readiness_does_not_require_a_running_ser
     f.configure(json!({"a":{"url":server.url}}), json!({}));
     std::fs::write(
         f.app.join(".sources.lock"),
-        json!({"version":1,"sources":{"a":commit}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": commit}}}).to_string(),
     )
     .unwrap();
     success(f.cli().arg("fetch").output().unwrap());
@@ -66,7 +66,7 @@ fn ssh_transport_fixture(native: bool) {
     f.configure(json!({"a": {"url": endpoint.url}}), json!({"a": dev}));
     std::fs::write(
         f.app.join(".sources.lock"),
-        json!({"version": 1, "sources": {"a": pin}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": pin}}}).to_string(),
     )
     .unwrap();
     success(f.cli().arg("fetch").output().unwrap());

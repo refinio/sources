@@ -160,7 +160,7 @@ fn run_rejects_incomplete_recursive_managed_modules_until_release_repairs_them()
     f.configure(json!({"a": {"url": upstream}}), json!({}));
     std::fs::write(
         f.app.join(".sources.lock"),
-        json!({"version": 1, "sources": {"a": parent_pin}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": parent_pin}}}).to_string(),
     )
     .unwrap();
     success(f.cli().arg("release").output().unwrap());

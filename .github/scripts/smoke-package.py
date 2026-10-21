@@ -37,6 +37,6 @@ with tempfile.TemporaryDirectory(prefix="sources-package-smoke-") as directory:
     subprocess.run([binary, "-C", project, "setup"], check=True)
     output = subprocess.check_output([binary, "-C", project, "status", "--json"])
     status = json.loads(output)
-    if status["version"] != 1 or status["mode"] != "unconfigured":
+    if status["version"] != 2 or status["mode"] != "unconfigured":
         sys.exit(f"Unexpected fresh project status: {status}")
 print(f"Packaged executable smoke passed: {archive.name}")

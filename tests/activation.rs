@@ -23,7 +23,7 @@ fn pin(f: &Fixture, upstream: &Path) -> String {
     let commit = f.git(upstream, &["rev-parse", "HEAD"]);
     std::fs::write(
         f.app.join(".sources.lock"),
-        json!({"version": 1, "sources": {"a": commit}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": commit}}}).to_string(),
     )
     .unwrap();
     commit

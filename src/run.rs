@@ -40,10 +40,10 @@ pub(crate) fn active_checkout(project: &Project, name: &str) -> Result<std::path
         .sources
         .get(name)
         .with_context(|| format!("unknown source {name}"))?;
-    if source.registry_release() {
+    if source.has_packages() {
         ensure!(
-            crate::pnpm::source_mode(project, name)? == "dev",
-            "{name}: published package selection has no active source checkout; run sources dev before executing checkout tasks"
+            crate::pnpm::source_mode(project, name)? == "file",
+            "{name}: published package selection has no active source checkout; run sources dev or sources release --git before executing checkout tasks"
         );
     }
     let link = project.links().join(name);
@@ -65,8 +65,7 @@ pub(crate) fn active_checkout(project: &Project, name: &str) -> Result<std::path
         )
     })?;
     let managed = project.managed(name);
-    let is_managed =
-        !source.registry_release() && managed.canonicalize().is_ok_and(|path| path == target);
+    let is_managed = managed.canonicalize().is_ok_and(|path| path == target);
     if is_managed {
         sources::config::real_directory_if_present(&project.internal().join("checkouts"))?;
     }

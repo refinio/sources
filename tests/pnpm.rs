@@ -77,8 +77,8 @@ impl NpmFixture {
         );
         f.configure(
             json!({"sdk":{"url":upstream,"pnpm":{
-                "@sources-probe/a":{"path":"packages/a","version":"1.0.0"},
-                "@sources-probe/b":{"path":"packages/b","version":"1.0.0"}
+                "@sources-probe/a":{"path":"packages/a"},
+                "@sources-probe/b":{"path":"packages/b"}
             }}}),
             json!({"sdk":dev}),
         );
@@ -97,6 +97,17 @@ impl NpmFixture {
         )
         .unwrap();
         std::fs::write(f.root.join("empty-npmrc"), "").unwrap();
+        success(
+            f.cli()
+                .args([
+                    "lock",
+                    "--registry",
+                    "@sources-probe/a:1.0.0",
+                    "@sources-probe/b:1.0.0",
+                ])
+                .output()
+                .unwrap(),
+        );
         Self {
             f,
             _registry: registry,
@@ -145,13 +156,13 @@ fn dev_and_release_switch_real_installed_packages_and_keep_unrelated_yaml() {
     assert_eq!(n.require(), "local-a/local-b");
     let status = success(n.cli().args(["status", "--json"]).output().unwrap());
     let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(status["sources"]["sdk"]["pnpm_selection"], "dev");
+    assert_eq!(status["sources"]["sdk"]["pnpm_selection"], "file");
     let dev_lock = std::fs::read(n.f.app.join("pnpm-lock.yaml")).unwrap();
-    success(n.cli().arg("release").output().unwrap());
+    success(n.cli().args(["release", "--registry"]).output().unwrap());
     assert_eq!(n.require(), "registry-a/registry-b");
     let status = success(n.cli().args(["status", "--json"]).output().unwrap());
     let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(status["sources"]["sdk"]["pnpm_selection"], "release");
+    assert_eq!(status["sources"]["sdk"]["pnpm_selection"], "registry");
     assert_eq!(status["sources"]["sdk"]["release_kind"], "pnpm");
     assert!(status["sources"]["sdk"]["active_commit"].is_null());
     failure(
@@ -200,7 +211,7 @@ fn legacy_json_overrides_are_rejected_before_selection_files_change() {
 fn registry_release_offline_uses_store_without_development_checkout_or_git_upstream() {
     let mut n = NpmFixture::new();
     std::fs::write(n.f.app.join("pnpm-workspace.yaml"), "packages: []\n").unwrap();
-    success(n.cli().arg("release").output().unwrap());
+    success(n.cli().args(["release", "--registry"]).output().unwrap());
     assert_eq!(n.require(), "registry-a/registry-b");
     success(n.cli().arg("dev").output().unwrap());
     n._registry.child.kill().unwrap();
@@ -209,26 +220,31 @@ fn registry_release_offline_uses_store_without_development_checkout_or_git_upstr
     std::fs::rename(&n.dev, n.f.root.join("absent-dev")).unwrap();
     std::fs::rename(n.f.root.join("upstream"), n.f.root.join("absent-upstream")).unwrap();
     std::fs::remove_dir_all(n.f.app.join("node_modules")).unwrap();
-    success(n.cli().args(["release", "--offline"]).output().unwrap());
+    success(
+        n.cli()
+            .args(["release", "--registry", "--offline"])
+            .output()
+            .unwrap(),
+    );
     assert_eq!(n.require(), "registry-a/registry-b");
     assert_eq!(
         std::fs::read(n.f.root.join("registry-requests.log")).unwrap(),
         requests
     );
     assert!(!n.f.app.join(".sources/checkouts/sdk").exists());
-    assert!(!n.f.app.join(".sources.lock").exists());
+    assert!(n.f.app.join(".sources.lock").exists());
 }
 
 #[test]
 fn failed_registry_install_reports_repair_and_rerunning_release_fixes_it() {
     let n = NpmFixture::new();
     success(n.cli().arg("dev").output().unwrap());
-    let config_path = n.f.app.join(".sources.conf");
+    let config_path = n.f.app.join(".sources.lock");
     let mut config: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
-    config["sources"]["sdk"]["pnpm"]["@sources-probe/a"]["version"] = json!("2.0.0");
+    config["sources"]["sdk"]["pnpm"]["@sources-probe/a"] = json!("2.0.0");
     write_json(&config_path, &config);
-    let output = n.cli().arg("release").output().unwrap();
+    let output = n.cli().args(["release", "--registry"]).output().unwrap();
     assert!(String::from_utf8_lossy(&output.stdout).contains("ERR_PNPM_NO_MATCHING_VERSION"));
     failure(output, "rerun sources release");
     let yaml = std::fs::read_to_string(n.f.app.join("pnpm-workspace.yaml")).unwrap();
@@ -236,9 +252,9 @@ fn failed_registry_install_reports_repair_and_rerunning_release_fixes_it() {
         yaml.contains("2.0.0"),
         "a failed install need not undo selection changes"
     );
-    config["sources"]["sdk"]["pnpm"]["@sources-probe/a"]["version"] = json!("1.0.0");
+    config["sources"]["sdk"]["pnpm"]["@sources-probe/a"] = json!("1.0.0");
     write_json(&config_path, &config);
-    success(n.cli().arg("release").output().unwrap());
+    success(n.cli().args(["release", "--registry"]).output().unwrap());
     assert_eq!(n.require(), "registry-a/registry-b");
 }
 
@@ -317,11 +333,18 @@ fn mixed_git_and_registry_sources_lock_and_activate_their_own_release_inputs() {
     let lock: serde_json::Value =
         serde_json::from_slice(&std::fs::read(n.f.app.join(".sources.lock")).unwrap()).unwrap();
     assert_eq!(
-        lock["sources"]["plain"],
+        lock["sources"]["plain"]["git"],
         n.f.git(&dev, &["rev-parse", "HEAD"])
     );
-    assert!(lock["sources"].get("sdk").is_none());
-    success(n.cli().arg("release").output().unwrap());
+    assert!(lock["sources"]["sdk"]["git"].is_string());
+    let absent = n.f.root.join("absent-plain-upstream");
+    std::fs::rename(&upstream, &absent).unwrap();
+    failure(
+        n.cli().args(["release", "--registry"]).output().unwrap(),
+        "rerun sources release --registry",
+    );
+    std::fs::rename(&absent, &upstream).unwrap();
+    success(n.cli().args(["release", "--registry"]).output().unwrap());
     assert_eq!(n.require(), "registry-a/registry-b");
     assert!(
         n.f.app
@@ -339,7 +362,7 @@ fn mixed_git_and_registry_sources_lock_and_activate_their_own_release_inputs() {
     let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["mode"], "release");
     assert_eq!(status["sources"]["plain"]["release_kind"], "git");
-    assert_eq!(status["sources"]["sdk"]["pnpm_selection"], "release");
+    assert_eq!(status["sources"]["sdk"]["pnpm_selection"], "registry");
 }
 
 #[test]
@@ -382,12 +405,12 @@ fn replace_registry_dev_link_with_managed_checkout(n: &NpmFixture) -> PathBuf {
 }
 
 #[test]
-fn registry_dev_run_rejects_a_link_to_a_valid_old_managed_git_checkout() {
+fn file_selection_run_accepts_a_valid_managed_git_checkout() {
     let n = NpmFixture::new();
     success(n.cli().arg("dev").output().unwrap());
     assert_eq!(n.require(), "local-a/local-b");
     let managed = replace_registry_dev_link_with_managed_checkout(&n);
-    failure(
+    success(
         n.cli()
             .args([
                 "run",
@@ -399,9 +422,8 @@ fn registry_dev_run_rejects_a_link_to_a_valid_old_managed_git_checkout() {
             ])
             .output()
             .unwrap(),
-        "unexpected workspace link target",
     );
-    assert!(!managed.join("wrong-checkout-run").exists());
+    assert!(managed.join("wrong-checkout-run").exists());
 }
 
 #[test]
@@ -417,8 +439,8 @@ fn registry_status_rejects_managed_git_link_with_unconfigured_package_selection(
     let output = n.cli().args(["status", "--json"]).output().unwrap();
     let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(status["sources"]["sdk"]["pnpm_selection"], "unconfigured");
-    assert_eq!(status["sources"]["sdk"]["active_mode"], "unexpected");
-    failure(output, "unexpected workspace link target");
+    assert_eq!(status["sources"]["sdk"]["active_mode"], "mixed");
+    failure(output, "links and pnpm references disagree");
 }
 
 #[cfg(unix)]
@@ -589,6 +611,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.unquote(self.path).lstrip('/')
         with (root/'registry-requests.log').open('a') as log: log.write(path+'\n')
         if path in ['a.tgz','b.tgz']:
+            if (root/'deny-tarballs').exists(): self.send_error(404);return
             data = archives[path[0]][0]
             self.send_response(200);self.send_header('Content-Type','application/octet-stream');self.end_headers();self.wfile.write(data);return
         if path in ['@sources-probe/a','@sources-probe/b']:
@@ -602,3 +625,191 @@ server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
 print(server.server_port,flush=True)
 server.serve_forever()
 "#;
+
+#[test]
+fn registry_lock_check_downloads_without_switching_and_failure_preserves_pins() {
+    let n = NpmFixture::new();
+    let original = std::fs::read(n.f.app.join(".sources.lock")).unwrap();
+    std::fs::write(n.f.root.join("deny-tarballs"), "").unwrap();
+    let failed = n
+        .cli()
+        .args(["lock", "--registry", "--check", "@sources-probe/a:1.0.0"])
+        .output()
+        .unwrap();
+    failure(failed, "registry download failed");
+    assert_eq!(
+        std::fs::read(n.f.app.join(".sources.lock")).unwrap(),
+        original
+    );
+    std::fs::remove_file(n.f.root.join("deny-tarballs")).unwrap();
+    let lock = n.f.app.join(".sources.lock");
+    let before = std::fs::read(&lock).unwrap();
+    let yaml = std::fs::read(n.f.app.join("pnpm-workspace.yaml")).unwrap();
+    success(
+        n.cli()
+            .args([
+                "lock",
+                "--registry",
+                "--check",
+                "@sources-probe/a:1.0.0",
+                "@sources-probe/b:1.0.0",
+            ])
+            .output()
+            .unwrap(),
+    );
+    let requests = std::fs::read_to_string(n.f.root.join("registry-requests.log")).unwrap();
+    assert!(
+        requests.contains(".tgz"),
+        "must download the release archive: {requests}"
+    );
+    assert_eq!(std::fs::read(&lock).unwrap(), before);
+    assert_eq!(
+        std::fs::read(n.f.app.join("pnpm-workspace.yaml")).unwrap(),
+        yaml
+    );
+    assert!(!n.f.app.join("pnpm-lock.yaml").exists());
+    assert!(!n.f.app.join("node_modules").exists());
+    failure(
+        n.cli()
+            .args(["lock", "--registry", "--check", "@sources-probe/a:2.0.0"])
+            .output()
+            .unwrap(),
+        "registry download failed",
+    );
+    assert_eq!(std::fs::read(&lock).unwrap(), before);
+}
+
+#[test]
+fn local_and_pinned_git_share_file_references_and_leave_dependency_lock_unchanged() {
+    let n = NpmFixture::new();
+    success(n.cli().args(["lock", "--git", "--check"]).output().unwrap());
+    success(n.cli().arg("dev").output().unwrap());
+    let lock = std::fs::read(n.f.app.join(".sources.lock")).unwrap();
+    let pnpm_lock = std::fs::read(n.f.app.join("pnpm-lock.yaml")).unwrap();
+    let yaml = std::fs::read(n.f.app.join("pnpm-workspace.yaml")).unwrap();
+    std::fs::write(
+        n.dev.join("packages/b/index.js"),
+        "module.exports = 'edited-b';\n",
+    )
+    .unwrap();
+    success(n.cli().args(["release", "--git"]).output().unwrap());
+    let output = success(
+        n.cli()
+            .args(["run", "sdk", "--", "git", "rev-parse", "HEAD"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        n.f.git(&n.f.root.join("upstream"), &["rev-parse", "HEAD"])
+    );
+    let status = success(n.cli().args(["status", "--json"]).output().unwrap());
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["sources"]["sdk"]["active_mode"], "release");
+    assert_eq!(status["sources"]["sdk"]["pnpm_selection"], "file");
+    assert_eq!(
+        std::fs::read(n.f.app.join("pnpm-lock.yaml")).unwrap(),
+        pnpm_lock
+    );
+    assert_eq!(
+        std::fs::read(n.f.app.join("pnpm-workspace.yaml")).unwrap(),
+        yaml
+    );
+    success(n.cli().arg("dev").output().unwrap());
+    assert_eq!(
+        std::fs::read(n.f.app.join("pnpm-lock.yaml")).unwrap(),
+        pnpm_lock
+    );
+    assert_eq!(std::fs::read(n.f.app.join(".sources.lock")).unwrap(), lock);
+    success(n.cli().args(["release", "--registry"]).output().unwrap());
+    assert_eq!(n.require(), "registry-a/registry-b");
+    let status = success(n.cli().args(["status", "--json"]).output().unwrap());
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["sources"]["sdk"]["cached_commit_available"], true);
+    success(n.cli().args(["release", "--git"]).output().unwrap());
+    assert_eq!(n.require(), "local-a/local-b");
+    assert_eq!(std::fs::read(n.f.app.join(".sources.lock")).unwrap(), lock);
+}
+
+#[test]
+fn failed_file_install_can_be_retried_with_the_suggested_pnpm_command() {
+    let n = NpmFixture::new();
+    let path = n.f.app.join("package.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    manifest["scripts"] = json!({"postinstall":"node -e \"process.exit(7)\""});
+    write_json(&path, &manifest);
+    failure(
+        n.cli().arg("dev").output().unwrap(),
+        "rerun pnpm install --no-frozen-lockfile",
+    );
+    assert!(n.f.app.join("pnpm-lock.yaml").exists());
+    manifest["scripts"] = json!({"postinstall":"node -e \"require('node:fs').writeFileSync('install-retried', 'yes')\""});
+    write_json(&path, &manifest);
+    success(
+        n.f.command(if cfg!(windows) { "pnpm.cmd" } else { "pnpm" })
+            .current_dir(&n.f.app)
+            .env("CI", "true")
+            .env("NPM_CONFIG_USERCONFIG", n.f.root.join("empty-npmrc"))
+            .env("NPM_CONFIG_GLOBALCONFIG", n.f.root.join("empty-npmrc"))
+            .args(["install", "--no-frozen-lockfile"])
+            .output()
+            .unwrap(),
+    );
+    assert!(n.f.app.join("install-retried").exists());
+    success(n.cli().arg("dev").output().unwrap());
+    assert_eq!(n.require(), "local-a/local-b");
+}
+
+#[test]
+fn registry_check_downloads_published_archives_while_file_overrides_are_active() {
+    let n = NpmFixture::new();
+    success(n.cli().arg("dev").output().unwrap());
+    let lock = std::fs::read(n.f.app.join(".sources.lock")).unwrap();
+    let pnpm_lock = std::fs::read(n.f.app.join("pnpm-lock.yaml")).unwrap();
+    let yaml = std::fs::read(n.f.app.join("pnpm-workspace.yaml")).unwrap();
+    std::fs::write(n.f.root.join("deny-tarballs"), "").unwrap();
+    failure(
+        n.cli()
+            .args(["lock", "--registry", "--check", "@sources-probe/a:1.0.0"])
+            .output()
+            .unwrap(),
+        "registry download failed",
+    );
+    assert_eq!(std::fs::read(n.f.app.join(".sources.lock")).unwrap(), lock);
+    assert_eq!(
+        std::fs::read(n.f.app.join("pnpm-lock.yaml")).unwrap(),
+        pnpm_lock
+    );
+    assert_eq!(
+        std::fs::read(n.f.app.join("pnpm-workspace.yaml")).unwrap(),
+        yaml
+    );
+    std::fs::remove_file(n.f.root.join("deny-tarballs")).unwrap();
+    success(
+        n.cli()
+            .args(["lock", "--registry", "--check", "@sources-probe/a:1.0.0"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(n.require(), "local-a/local-b");
+}
+
+#[test]
+fn registry_status_repairs_a_stale_checkout_link_without_changing_selection() {
+    let n = NpmFixture::new();
+    success(n.cli().args(["release", "--registry"]).output().unwrap());
+    let link = n.f.app.join("sources/sdk");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&n.dev, &link).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&n.dev, &link).unwrap();
+    failure(
+        n.cli().args(["status", "--json"]).output().unwrap(),
+        "run sources release --registry",
+    );
+    success(n.cli().args(["release", "--registry"]).output().unwrap());
+    assert!(!link.exists());
+    assert_eq!(n.require(), "registry-a/registry-b");
+    success(n.cli().args(["status", "--json"]).output().unwrap());
+}

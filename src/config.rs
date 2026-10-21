@@ -23,7 +23,6 @@ pub struct Source {
 #[serde(deny_unknown_fields)]
 pub struct PnpmPackage {
     pub path: PathBuf,
-    pub version: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -71,7 +70,7 @@ pub fn turbo_env_name(package: &str, task: &str) -> Result<String> {
 }
 
 impl Source {
-    pub fn registry_release(&self) -> bool {
+    pub fn has_packages(&self) -> bool {
         !self.pnpm.is_empty()
     }
 }
@@ -94,13 +93,22 @@ pub struct Local {
 #[serde(deny_unknown_fields)]
 pub struct Pins {
     pub version: u32,
-    pub sources: BTreeMap<String, String>,
+    pub sources: BTreeMap<String, SourcePins>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourcePins {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pnpm: BTreeMap<String, String>,
 }
 
 impl Default for Pins {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             sources: BTreeMap::new(),
         }
     }
@@ -402,10 +410,6 @@ impl Project {
                         }),
                     "{name}: package path for {package} must stay within its source checkout"
                 );
-                ensure!(
-                    semver::Version::parse(&mapping.version).is_ok(),
-                    "{name}: expected exact package version for {package}, such as 1.2.3"
-                );
             }
             if let Some(dev) = self.local.sources.get(name) {
                 let dev = resolved_path(&self.root.join(dev))?;
@@ -422,36 +426,45 @@ impl Project {
         let path = self.root.join(LOCK);
         let pins: Pins = if path.exists() {
             read_json(&path)?
-        } else if complete
-            && self
-                .config
-                .sources
-                .values()
-                .any(|source| !source.registry_release())
-        {
+        } else if complete && !self.config.sources.is_empty() {
             bail!("missing {LOCK}; run sources lock");
         } else {
             Pins::default()
         };
         ensure!(
-            pins.version == 1,
+            pins.version == 2,
             "unsupported lock version {}",
             pins.version
         );
-        for (name, hash) in &pins.sources {
+        for (name, entry) in &pins.sources {
             ensure!(
                 self.config.sources.contains_key(name),
                 "obsolete lock entry {name}; edit {LOCK}"
             );
-            ensure!(
-                [40, 64].contains(&hash.len()) && hash.bytes().all(|c| c.is_ascii_hexdigit()),
-                "invalid full commit ID for {name} in {LOCK}"
-            );
+            if let Some(hash) = &entry.git {
+                ensure!(
+                    [40, 64].contains(&hash.len()) && hash.bytes().all(|c| c.is_ascii_hexdigit()),
+                    "invalid full commit ID for {name} in {LOCK}"
+                );
+            }
+            for (package, version) in &entry.pnpm {
+                ensure!(
+                    self.config.sources[name].pnpm.contains_key(package),
+                    "obsolete package pin {package} for {name} in {LOCK}"
+                );
+                ensure!(
+                    semver::Version::parse(version).is_ok(),
+                    "{name}: expected exact package version for {package}, such as 1.2.3"
+                );
+            }
         }
         if complete {
             for name in self.config.sources.keys() {
                 ensure!(
-                    self.config.sources[name].registry_release() || pins.sources.contains_key(name),
+                    pins.sources
+                        .get(name)
+                        .and_then(|entry| entry.git.as_ref())
+                        .is_some(),
                     "missing lock entry for {name}; run sources lock"
                 );
             }

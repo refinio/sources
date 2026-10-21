@@ -34,7 +34,7 @@ Add an optional per-source `packages` map. Each key is the actual child package 
 }
 ```
 
-The example assumes an additive extension to version 1; follow the repo's experimental compatibility policy if implementation requires a format change. Do not silently remove the existing `pnpm` release-selection fields or change existing dev/release behavior. Sources without `packages` continue to work.
+The example assumes an additive extension to version 1; follow the repo's experimental compatibility policy if implementation requires a format change. Package paths remain in the `pnpm` mappings; exact versions now live beside Git pins in lock format 2. Explicit `release --git` and `release --registry` select the desired input. Sources without `packages` continue to work.
 
 Validation:
 
@@ -185,7 +185,7 @@ Prior disposable checks with real Turbo 2.7.6 and pnpm 9.15.4 established:
 
 Implement and verify through the repository's public CLI acceptance-test seam. Required cases:
 
-1. Existing commands/configuration including `pnpm` mappings still work; new commands appear in help.
+1. Sources with package paths in `pnpm` mappings and lock format 2 work with both Git and registry selection; new commands appear in help.
 2. Valid configuration, scoped package names, task names with colons, multiple configured tasks, and multiple sources.
 3. Invalid/empty entries, duplicate package owners, forbidden `__`, and normalized environment collisions fail clearly.
 4. Missing task/package or unconfigured selector fails before any selected execution; generic script/command fallback never occurs.

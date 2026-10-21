@@ -24,8 +24,8 @@ fn lock_captures_development_heads_warns_dirty_and_validates_updates_before_writ
     let lock_path = f.app.join(".sources.lock");
     let original = std::fs::read(&lock_path).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&original).unwrap();
-    assert_eq!(value["sources"]["a"], a_pin);
-    assert_eq!(value["sources"]["b"], b_pin);
+    assert_eq!(value["sources"]["a"]["git"], a_pin);
+    assert_eq!(value["sources"]["b"]["git"], b_pin);
     assert!(!f.app.join(".sources/checkouts").exists());
     assert!(!f.app.join("sources").exists());
     let abbreviated = format!("a:{}", &a_pin[..8]);
@@ -77,7 +77,7 @@ fn check_lock_caches_remote_commit_without_development_mappings_or_activation() 
     );
     let value: serde_json::Value =
         serde_json::from_slice(&std::fs::read(f.app.join(".sources.lock")).unwrap()).unwrap();
-    assert_eq!(value["sources"]["a"], pin);
+    assert_eq!(value["sources"]["a"]["git"], pin);
     assert!(!f.app.join("sources").exists());
     let cached = f.app.join(".sources/checkouts/a");
     f.git(&cached, &["cat-file", "-e", &format!("{pin}^{{commit}}")]);
@@ -182,7 +182,7 @@ fn a_hexadecimal_branch_name_does_not_override_an_abbreviated_object_id() {
     );
     let pins: serde_json::Value =
         serde_json::from_slice(&std::fs::read(f.app.join(".sources.lock")).unwrap()).unwrap();
-    assert_eq!(pins["sources"]["a"], wanted);
+    assert_eq!(pins["sources"]["a"]["git"], wanted);
 }
 
 #[test]
@@ -260,7 +260,7 @@ fn explicit_local_tags_peel_to_commit_pins_without_fetching_or_moving_checkouts(
         );
         let lock: serde_json::Value =
             serde_json::from_slice(&std::fs::read(f.app.join(".sources.lock")).unwrap()).unwrap();
-        assert_eq!(lock["sources"]["a"], expected);
+        assert_eq!(lock["sources"]["a"]["git"], expected);
     }
     assert_eq!(f.git(&dev, &["rev-parse", "HEAD"]), second);
     assert_eq!(f.git(&dev, &["status", "--porcelain=v1"]), before);
@@ -316,7 +316,7 @@ fn checked_tag_pins_use_exact_upstream_tags_without_moving_or_fetching_into_deve
         );
         let lock: serde_json::Value =
             serde_json::from_slice(&std::fs::read(f.app.join(".sources.lock")).unwrap()).unwrap();
-        assert_eq!(lock["sources"]["a"], expected);
+        assert_eq!(lock["sources"]["a"]["git"], expected);
         assert_eq!(f.git(&cached, &["rev-list", "--count", &expected]), "1");
         assert_eq!(f.git(&cached, &["tag", "--list"]), "");
         if let Some(head) = &activated {
@@ -399,7 +399,7 @@ fn upstream_tag_selection_overrides_local_tags_and_cached_local_conflicts_are_ex
     let path = f.app.join(".sources.lock");
     let before = std::fs::read(&path).unwrap();
     let lock: serde_json::Value = serde_json::from_slice(&before).unwrap();
-    assert_eq!(lock["sources"]["a"], moved);
+    assert_eq!(lock["sources"]["a"]["git"], moved);
     failure(
         f.cli().args(["lock", "a:tag=release"]).output().unwrap(),
         "ambiguous local tag",
@@ -528,7 +528,7 @@ fn a_long_upstream_tag_can_be_cached_and_selected_again_without_network() {
     let path = f.app.join(".sources.lock");
     let before = std::fs::read(&path).unwrap();
     let lock: serde_json::Value = serde_json::from_slice(&before).unwrap();
-    assert_eq!(lock["sources"]["a"], pin);
+    assert_eq!(lock["sources"]["a"]["git"], pin);
     std::fs::rename(&upstream, f.root.join("upstream-offline")).unwrap();
     success(f.cli().args(["lock", &selector]).output().unwrap());
     assert_eq!(std::fs::read(&path).unwrap(), before);
@@ -558,7 +558,7 @@ fn a_local_development_tag_can_be_pinned_despite_a_broken_managed_cache() {
     let path = f.app.join(".sources.lock");
     let before = std::fs::read(&path).unwrap();
     let lock: serde_json::Value = serde_json::from_slice(&before).unwrap();
-    assert_eq!(lock["sources"]["a"], pin);
+    assert_eq!(lock["sources"]["a"]["git"], pin);
     assert_eq!(f.git(&dev, &["rev-parse", "HEAD"]), head);
     assert_eq!(
         std::fs::read(cached.join(".git/HEAD")).unwrap(),

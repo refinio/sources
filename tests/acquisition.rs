@@ -23,7 +23,7 @@ fn fetch_caches_exact_shallow_revisions_without_moving_existing_head() {
     let lock = f.app.join(".sources.lock");
     std::fs::write(
         &lock,
-        json!({"version": 1, "sources": {"a": first}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": first}}}).to_string(),
     )
     .unwrap();
 
@@ -36,7 +36,7 @@ fn fetch_caches_exact_shallow_revisions_without_moving_existing_head() {
 
     std::fs::write(
         &lock,
-        json!({"version": 1, "sources": {"a": second}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": second}}}).to_string(),
     )
     .unwrap();
     let before_lock = std::fs::read(&lock).unwrap();
@@ -89,7 +89,7 @@ fn readiness_caches_future_recursive_modules_and_changed_urls_without_switching_
     let lock = f.app.join(".sources.lock");
     std::fs::write(
         &lock,
-        json!({"version": 1, "sources": {"a": parent_first}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": parent_first}}}).to_string(),
     )
     .unwrap();
     success(f.cli().arg("fetch").output().unwrap());
@@ -147,7 +147,7 @@ fn readiness_caches_future_recursive_modules_and_changed_urls_without_switching_
     let parent_next = f.git(&upstream, &["rev-parse", "HEAD"]);
     std::fs::write(
         &lock,
-        json!({"version": 1, "sources": {"a": parent_next}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": parent_next}}}).to_string(),
     )
     .unwrap();
 
@@ -215,7 +215,7 @@ fn a_server_without_shallow_support_uses_a_reported_compatibility_fallback() {
     f.configure(json!({"a": {"url": server.url}}), json!({}));
     std::fs::write(
         f.app.join(".sources.lock"),
-        json!({"version": 1, "sources": {"a": pin}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": pin}}}).to_string(),
     )
     .unwrap();
     let out = success(f.cli().arg("fetch").output().unwrap());
@@ -254,7 +254,7 @@ fn exact_tag_selection_reports_a_no_shallow_fallback_without_fetching_unrelated_
     let managed = f.app.join(".sources/checkouts/a");
     let lock: serde_json::Value =
         serde_json::from_slice(&std::fs::read(f.app.join(".sources.lock")).unwrap()).unwrap();
-    assert_eq!(lock["sources"]["a"], pin);
+    assert_eq!(lock["sources"]["a"]["git"], pin);
     assert_eq!(f.git(&managed, &["cat-file", "-t", &pin]), "commit");
     assert_eq!(f.git(&managed, &["tag", "--list"]), "");
     assert!(
@@ -283,7 +283,7 @@ fn fallback_finds_a_pin_reachable_only_through_annotated_tag_history() {
     f.configure(json!({"a": {"url": server.url}}), json!({}));
     std::fs::write(
         f.app.join(".sources.lock"),
-        json!({"version": 1, "sources": {"a": pin}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": pin}}}).to_string(),
     )
     .unwrap();
     success(f.cli().arg("fetch").output().unwrap());
@@ -339,7 +339,7 @@ fn fallback_checks_tag_history_before_exhausting_an_unrelated_branch() {
     f.configure(json!({"a": {"url": server.url}}), json!({}));
     std::fs::write(
         f.app.join(".sources.lock"),
-        json!({"version": 1, "sources": {"a": pin}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": pin}}}).to_string(),
     )
     .unwrap();
     let output = success(f.cli().arg("fetch").output().unwrap());
@@ -387,7 +387,7 @@ fn fallback_prioritizes_an_advertised_tag_matching_the_required_commit() {
     f.configure(json!({"a": {"url": server.url}}), json!({}));
     std::fs::write(
         f.app.join(".sources.lock"),
-        json!({"version": 1, "sources": {"a": pin}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": pin}}}).to_string(),
     )
     .unwrap();
     success(f.cli().arg("fetch").output().unwrap());
@@ -416,7 +416,7 @@ fn readiness_recovers_a_missing_working_tree_blob_from_upstream() {
     f.configure(json!({"a": {"url": upstream}}), json!({}));
     std::fs::write(
         f.app.join(".sources.lock"),
-        json!({"version": 1, "sources": {"a": pin}}).to_string(),
+        json!({"version": 2, "sources": {"a": {"git": pin}}}).to_string(),
     )
     .unwrap();
     success(f.cli().arg("fetch").output().unwrap());
