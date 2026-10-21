@@ -106,7 +106,7 @@ Resolution follows checkout and selected task identities, not repository edges a
 
 Hash composition preserves the existing execution lock contract. `sources task` holds the invoking project's lock while child Turbo runs. Prerequisite scripts must not reenter a project lock held by an ancestor process. Such nested project operations remain unsupported, as specified in the core CLI contract. An acyclic hash graph alone does not authorize arbitrary recursive command execution.
 
-The public CLI regression suite covers the natural three-repository chain, leaf edits, downstream hash changes, unchanged cache hits, and restoration after all build outputs are deleted. These guarantees preserve Turbo's ownership of hashes, scheduling, outputs, and caches. This change does not add output staging, package snapshot refresh, or dependency installation.
+The public CLI regression suite covers the natural three-repository chain, leaf edits, downstream hash changes, unchanged cache hits, and restoration after all build outputs are deleted. The suite also covers task granularity, transitive task environment declarations, wildcard exclusions, global environment inputs, repository cycles through independent tasks, and genuine task hash cycles. These guarantees preserve Turbo's ownership of hashes, scheduling, outputs, and caches. This change does not add output staging, package snapshot refresh, or dependency installation.
 
 ## Command: `sources task`
 
