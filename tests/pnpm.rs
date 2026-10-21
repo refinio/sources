@@ -356,6 +356,71 @@ fn invalid_owned_override_values_are_reported_as_mixed_selection() {
     failure(output, "pnpm references are inconsistent");
 }
 
+fn replace_registry_dev_link_with_managed_checkout(n: &NpmFixture) -> PathBuf {
+    let managed = n.f.app.join(".sources/checkouts/sdk");
+    std::fs::create_dir_all(managed.parent().unwrap()).unwrap();
+    n.f.git(
+        &n.f.root,
+        &[
+            "clone",
+            n.f.root.join("upstream").to_str().unwrap(),
+            managed.to_str().unwrap(),
+        ],
+    );
+    let link = n.f.app.join("sources/sdk");
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&managed, link).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        std::fs::remove_dir(&link).unwrap();
+        std::os::windows::fs::symlink_dir(&managed, link).unwrap();
+    }
+    managed
+}
+
+#[test]
+fn registry_dev_run_rejects_a_link_to_a_valid_old_managed_git_checkout() {
+    let n = NpmFixture::new();
+    success(n.cli().arg("dev").output().unwrap());
+    assert_eq!(n.require(), "local-a/local-b");
+    let managed = replace_registry_dev_link_with_managed_checkout(&n);
+    failure(
+        n.cli()
+            .args([
+                "run",
+                "sdk",
+                "--",
+                "node",
+                "-e",
+                "require('node:fs').writeFileSync('wrong-checkout-run', 'ran')",
+            ])
+            .output()
+            .unwrap(),
+        "unexpected workspace link target",
+    );
+    assert!(!managed.join("wrong-checkout-run").exists());
+}
+
+#[test]
+fn registry_status_rejects_managed_git_link_with_unconfigured_package_selection() {
+    let n = NpmFixture::new();
+    success(n.cli().arg("dev").output().unwrap());
+    replace_registry_dev_link_with_managed_checkout(&n);
+    std::fs::write(
+        n.f.app.join("pnpm-workspace.yaml"),
+        "packages: []\noverrides:\n  unrelated-package: 2.3.4\n",
+    )
+    .unwrap();
+    let output = n.cli().args(["status", "--json"]).output().unwrap();
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["sources"]["sdk"]["pnpm_selection"], "unconfigured");
+    assert_eq!(status["sources"]["sdk"]["active_mode"], "unexpected");
+    failure(output, "unexpected workspace link target");
+}
+
 #[cfg(unix)]
 mod signals {
     use super::*;

@@ -353,7 +353,7 @@ pub fn status(project: &Project, json: bool) -> Result<i32> {
                     let target = config::resolved_path(&target)?;
                     let managed = config::resolved_path(&project.managed(name))?;
                     let dev_matches = dev.as_ref().map(|path| config::resolved_path(path)).transpose()?.is_some_and(|dev| dev == target);
-                    let managed_mode = target == managed;
+                    let managed_mode = target == managed && !source.registry_release();
                     row.active_mode = if managed_mode { "release" } else if dev_matches { "dev" } else { "unexpected" }.into();
                     ensure!(managed_mode || dev_matches, "unexpected workspace link target; run sources dev or sources release");
                     ensure!(path.exists(), "broken workspace link; run sources dev or sources release --clean");

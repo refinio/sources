@@ -38,7 +38,8 @@ pub fn execute(project: &Project, name: &str, args: &[OsString]) -> Result<i32> 
         )
     })?;
     let managed = project.managed(name);
-    let is_managed = managed.canonicalize().is_ok_and(|path| path == target);
+    let is_managed =
+        !source.registry_release() && managed.canonicalize().is_ok_and(|path| path == target);
     if is_managed {
         sources::config::real_directory_if_present(&project.internal().join("checkouts"))?;
     }
