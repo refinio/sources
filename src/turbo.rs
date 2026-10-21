@@ -3,6 +3,7 @@ use serde::Deserialize;
 use sources::config::Project;
 use sources::git::Git;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -42,7 +43,47 @@ fn command(root: &Path) -> Result<Command> {
     );
     let mut command = crate::pnpm::pnpm_command(root);
     command.args(["exec", "turbo"]);
+    // Snapshot queries and nested task execution must hash the same environment.
+    // Never feed the parent's bridge hashes back into a child's task hashes.
+    for (key, _) in std::env::vars_os() {
+        let prefix = key.as_encoded_bytes().get(..b"SOURCES_".len());
+        let managed = prefix.is_some_and(|prefix| {
+            if cfg!(windows) {
+                prefix.eq_ignore_ascii_case(b"SOURCES_")
+            } else {
+                prefix == b"SOURCES_"
+            }
+        });
+        if managed {
+            command.env_remove(key);
+        }
+    }
     Ok(command)
+}
+
+pub(crate) fn prepare_parent(project: &Project, arguments: &[OsString]) -> Result<Command> {
+    let mut parent = command(&project.root)?;
+    let selectors = project
+        .config
+        .sources
+        .values()
+        .flat_map(|source| &source.packages)
+        .flat_map(|(package, entry)| {
+            entry
+                .tasks
+                .iter()
+                .map(move |task| format!("{package}:{task}"))
+        })
+        .collect::<Vec<_>>();
+    let mut groups = prepare(project, &selectors)?;
+    for source in &mut groups {
+        for (id, hash) in query(source)? {
+            let (package, task) = id.split_once('#').expect("prepared package/task identity");
+            parent.env(sources::config::turbo_env_name(package, task)?, hash);
+        }
+    }
+    parent.args(arguments);
+    Ok(parent)
 }
 
 fn prepare(project: &Project, selectors: &[String]) -> Result<Vec<SourceTasks>> {

@@ -159,7 +159,7 @@ Published-package sources do not need a Git pin, development mapping, or managed
 
 `status` reports selected references, not installed-package verification. `sources run` requires a checkout, so use `sources dev` before running a command in a source currently selected as a registry release. If installation fails, fix the cause and rerun the intended Sources command.
 
-## Child Turbo entry points
+## Turbo bridge
 
 Optionally declare allowed child package tasks in each source's `.sources.conf` entry:
 
@@ -177,12 +177,21 @@ sources task @example/protocol:build @example/ui:pack
 sources task @example/protocol:pack:app
 ```
 
-Install pnpm and bootstrap Turbo locally in each child repository first. Sources invokes `pnpm exec turbo`, validates every selected task before execution, and lets Turbo own the graph and cache. Task commands wait for the project lock so concurrent parent preparation tasks serialize. Registry-selected sources require `sources dev` before checkout tasks. See [the bridge contract](docs/turbo-integration-spec.md).
+Install pnpm and bootstrap Turbo locally in each child repository first. Sources invokes `pnpm exec turbo`, validates every selected task before execution, and lets Turbo own the graph and cache. Task commands wait for the project lock so concurrent parent preparation tasks serialize. Registry-selected sources require `sources dev` before checkout tasks. Launch parent Turbo through Sources to receive all configured child task hashes:
+
+```sh
+sources turbo run build --filter=@app/web
+```
+
+For example, `@example/protocol:pack:app` exports `SOURCES_EXAMPLE_PROTOCOL__PACK_APP`. Declare only the hash variables a parent task consumes in its Turbo `env` list. Use an uncached parent preparation task that invokes `sources task` for required child outputs, then depend on that preparation task. Turbo owns the graph and cache; artifact staging and pnpm file-dependency refresh remain explicit workflow steps. Install local Turbo in the parent too.
+
+The outer lock is released before parent Turbo starts so nested task calls work. Keep configuration, checkout selection, and source contents stable during that parent build. Inherited `SOURCES_` values are cleared from all Turbo invocations; only parent Turbo receives the fresh snapshot. See [the bridge contract](docs/turbo-integration-spec.md) for a complete configuration example.
 
 ## Commands
 
 | Command | Behavior |
 | --- | --- |
+| `turbo [args ...]` | Run parent Turbo with all configured child task hash variables. |
 | `task package:task...` | Run allowed exact child Turbo tasks in active checkouts. |
 | `setup` | Create missing configuration, directories, and ignore entries. |
 | `check` | Validate all development mappings and repository identities locally. |
@@ -221,7 +230,7 @@ Multi-source activation is not atomic. An interruption may leave partial checkou
 
 There is no rollback journal or saved mode flag. `status` derives `dev`, `release`, `mixed`, or `unconfigured` from actual links and opt-in pnpm override entries. Links in release mode can still have commit or submodule mismatches, which status reports separately.
 
-All project commands take one exclusive advisory lock at `.sources/project.lock`. `task` waits for a busy lock to serialize child Turbo operations; other commands fail immediately. On Unix, `run` with an accessible controlling terminal keeps the shell's process group, including in pipelines, with redirected streams, or in background jobs. The shell controls terminal ownership and job suspension. Sources holds the lock until its direct child exits. Terminal interrupts reach the shell job group naturally; Sources absorbs its own interactive `SIGINT`, so programmatic interruption must target the job group. A `SIGTERM` sent explicitly to Sources is forwarded to its direct child. Interactive commands must wait for their own workers; workers left behind afterward are outside the lock and supervision guarantee.
+All project commands take one exclusive advisory lock at `.sources/project.lock`. `turbo` releases the lock after its hash snapshot, before parent execution. `task` waits for a busy lock to serialize child Turbo operations; other commands fail immediately. On Unix, `run` with an accessible controlling terminal keeps the shell's process group, including in pipelines, with redirected streams, or in background jobs. The shell controls terminal ownership and job suspension. Sources holds the lock until its direct child exits. Terminal interrupts reach the shell job group naturally; Sources absorbs its own interactive `SIGINT`, so programmatic interruption must target the job group. A `SIGTERM` sent explicitly to Sources is forwarded to its direct child. Interactive commands must wait for their own workers; workers left behind afterward are outside the lock and supervision guarantee.
 
 Without a controlling terminal, `run` uses a dedicated child process group, forwards interruption and termination to it, and holds the lock until that group finishes. Jobs that leave the group are outside supervision. Process termination releases the lock; do not remove the lock file or `.sources/` while an operation is running.
 

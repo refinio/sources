@@ -140,6 +140,52 @@ impl TurboFixture {
         success(self.cli().arg("dev").output().unwrap());
         child
     }
+
+    pub fn parent(&self) {
+        write_json(
+            &self.f.app.join("package.json"),
+            &json!({"name":"parent-fixture","private":true,"packageManager":"pnpm@10.15.0"}),
+        );
+        std::fs::write(
+            self.f.app.join("pnpm-workspace.yaml"),
+            "packages:\n  - packages/*\n",
+        )
+        .unwrap();
+        for (directory, name) in [("web", "@app/web"), ("other", "@app/other")] {
+            let package = self.f.app.join("packages").join(directory);
+            std::fs::create_dir_all(&package).unwrap();
+            write_json(
+                &package.join("package.json"),
+                &json!({"name":name,"version":"1.0.0","scripts":{
+                    "inspect":"node ../../inspect.cjs"
+                }}),
+            );
+        }
+        write_json(
+            &self.f.app.join("turbo.json"),
+            &json!({"tasks":{"inspect":{
+                "cache":false,"passThroughEnv":["SOURCES_*","UNRELATED_PROBE"]
+            }}}),
+        );
+        std::fs::write(self.f.app.join("inspect.cjs"), r#"
+const fs = require('node:fs');
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('SOURCES_') || key === 'UNRELATED_PROBE'));
+fs.writeFileSync('../../observed-' + JSON.parse(fs.readFileSync('package.json', 'utf8')).name.split('/').pop() + '.json', JSON.stringify({env, args:process.argv.slice(2), cwd:process.cwd()}));
+console.log('parent-output');
+"#).unwrap();
+        std::fs::write(self.f.app.join(".gitignore"), "node_modules/\n.turbo/\ndist/\nsources/\n.sources/\n.sources.local.conf\nobserved-*.json\n").unwrap();
+        success(
+            pnpm(&self.f, &self.f.app)
+                .args(["install", "--offline", "--ignore-scripts"])
+                .output()
+                .unwrap(),
+        );
+        install_turbo(&self.f.app);
+        self.f.git(&self.f.app, &["init"]);
+        self.f.git(&self.f.app, &["add", "."]);
+        self.f
+            .git(&self.f.app, &["commit", "-qm", "Parent Turbo fixture"]);
+    }
 }
 
 pub fn pnpm(f: &Fixture, root: &Path) -> Command {
@@ -151,6 +197,15 @@ pub fn pnpm(f: &Fixture, root: &Path) -> Command {
     #[cfg(not(windows))]
     let program = "pnpm";
     let mut command = f.command(program);
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("SOURCES_")
+        {
+            command.env_remove(key);
+        }
+    }
     command
         .current_dir(root)
         .env("CI", "true")

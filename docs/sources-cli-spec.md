@@ -221,6 +221,7 @@ Ordinary checkout may encounter ignored or untracked files that would be overwri
 | `sources dev` | No Git fetch; opt-in pnpm installation may use the registry. |
 | `sources status` | None. |
 | `sources run` | None by the tool; the child command may use the network. |
+| `sources turbo` / `sources task` | No fetch, installation, or tool download; invoked Turbo tasks may use the network. |
 | `sources lock` | None unless `--check` is present. |
 | `sources lock --check` | Ensure every proposed pin is available in its managed clone, fetching missing objects as needed. |
 | `sources fetch [name...]` | Fetch required revisions for all or selected sources, including recursive submodule inputs. |
@@ -350,6 +351,14 @@ Execute the command and arguments directly, without implicit shell parsing. User
 
 Inspect source cleanliness before and after execution. Return the child's exit status when it ran, including when it left source changes. Failure to start the child is a tool error. No automatic mode switch, fetch, dependency installation, or lock update occurs.
 
+### `sources turbo [Turbo arguments...]`
+
+Snapshot all configured child package/task hashes through each active checkout's local Turbo dry-run JSON. Require executable tasks and use their exact hashes, never a Sources-generated tree hash. Export each as `SOURCES_<NORMALIZED_PACKAGE>__<NORMALIZED_TASK>` to the parent's locally installed Turbo, forwarding arguments from the project root. Components uppercase ASCII alphanumeric characters, replace maximal punctuation runs with `_`, and trim `_`; reject empty components and collisions globally. `packages` is optional and additive to configuration version 1.
+
+`SOURCES_` is reserved. Remove inherited keys before child queries, child execution, and parent launch, then inject the complete fresh snapshot only into the parent. Prefix matching follows case-insensitive environment naming on Windows. Preserve unrelated environment. Child queries and actual nested executions therefore use the same bridge environment even if child Turbo configuration includes a `SOURCES_*` wildcard. Single-package repositories use bare task names after validating the root manifest name; monorepo root tasks use Turbo's `//#task` identifier.
+
+Hold the project lock during snapshot preparation, then release it before launching parent Turbo. Parent tasks may invoke concurrent `sources task` prerequisites, which serialize through the same project lock. Keep source selection, configuration, and checkout contents stable for a parent build; the snapshot does not freeze mutable files. Preserve the existing interactive/noninteractive supervision policy without reacquiring the outer lock. No implicit fetch, build-output staging, dependency installation, or publishing occurs. Turbo remains responsible for graphs, inputs, outputs, execution, and caching. See [the Turbo bridge contract](turbo-integration-spec.md) for parent task/env examples and explicit install-refresh prerequisites.
+
 ### `sources task <package:task>...`
 
 Run explicitly allowed child Turbo entry points from active source checkouts. The optional per-source `packages` object maps actual Turbo package names to objects with distinct nonempty `tasks` lists. Package ownership and normalized environment identities must be unique. Existing `pnpm` mappings remain independent. Reject unknown fields, package names containing `__`, and names that cannot be represented by the selector/task identity.
@@ -364,7 +373,7 @@ Validate configuration, path safety, and relevant inputs before changing links o
 
 Inspect the state relevant to each command on the next invocation. Detect obvious breakage such as invalid Git roots, incomplete checkouts, broken links, or missing required submodule inputs. Error with the affected source and path and a concrete repair suggestion. `sources dev` repairs development links, `sources release` reapplies pins to reusable clones, `sources fetch` obtains missing inputs, and `sources release --clean` recreates broken managed contents. Commands performing the suggested repair may fix the corresponding missing or incomplete state instead of rejecting it first. Do not perform a full repository integrity audit on every invocation.
 
-Use one exclusive operating-system advisory lock per project at `.sources/project.lock`. All project commands acquire it before inspection or mutation, including `sources run` until its direct child exits in an interactive terminal context, or until its dedicated child group finishes without a controlling terminal. `--help` and `--version` need no project lock. Commands fail immediately when the lock is busy and suggest retrying after the other command finishes, except `sources task`, which waits for the same exclusive lock to serialize child Turbo execution. Do not support nested project operations inside `sources run` or inside a child `sources task` execution.
+Use one exclusive operating-system advisory lock per project at `.sources/project.lock`. `sources turbo` holds it only through its child hash snapshot and releases it before parent execution. All other project commands acquire it before inspection or mutation, including `sources run` until its direct child exits in an interactive terminal context, or until its dedicated child group finishes without a controlling terminal. `--help` and `--version` need no project lock. Commands fail immediately when the lock is busy and suggest retrying after the other command finishes, except `sources task`, which waits for the same exclusive lock to serialize child Turbo execution. Do not support nested project operations inside `sources run` or inside a child `sources task` execution.
 
 Use a lock held by an open file handle so process termination releases ownership. Do not treat the continued existence of the lock file as a live lock, and do not unlink or replace that file while an operation holds it. Creating the internal directory and lock file is permitted when bootstrapping a project. External editors and manual deletion of managed state are outside the lock's protection; users must not remove the lock file or managed directory during a running command.
 
@@ -486,8 +495,8 @@ Inspect fetched refs and object graphs to verify that shallow acquisition avoids
 - Submodules activate at recorded gitlink commits, including nested modules and changed URLs; no branch merges or updates to moving submodule tips occur.
 - Workspace link replacement and stale-link removal never remove link targets; ordinary files and directories at required link paths cause errors.
 - `sources run` executes in the active source, preserves child exit behavior, and reports source changes after execution.
-- Concurrent operations cannot delete or replace a checkout being used by another tool operation.
-- One project lock fails immediately when busy and becomes available after process termination without deleting a stale lock file.
+- Checkout operations and `sources run`/`sources task` execution exclude concurrent checkout mutation. Parent Turbo execution requires stable checkout selection and configuration after its hash snapshot releases the lock.
+- One project lock fails immediately when busy except for serialized `sources task` calls, which wait. It becomes available after process termination without deleting a stale lock file.
 - Discovery uses the nearest parent configuration, `-C` changes the search start, and JSON status and exit codes follow the documented command conventions.
 - Linux and macOS tests are required; Windows support and tests are best effort.
 

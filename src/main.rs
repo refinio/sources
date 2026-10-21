@@ -26,6 +26,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run parent Turbo with hashes from every configured child package/task
+    #[command(disable_help_flag = true)]
+    Turbo {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        arguments: Vec<OsString>,
+    },
     /// Run allowed package:task entry points through the selected child Turbo repositories
     Task {
         #[arg(required = true, num_args = 1..)]
@@ -109,7 +115,7 @@ fn execute(cli: Cli) -> Result<i32> {
         None if matches!(cli.command, Commands::Setup) => std::fs::canonicalize(start)?,
         None => anyhow::bail!("no {CONFIG} found; run sources setup in the project root"),
     };
-    let _lock = project_lock(&root, matches!(cli.command, Commands::Task { .. }))
+    let lock = project_lock(&root, matches!(cli.command, Commands::Task { .. }))
         .context("cannot acquire project lock")?;
     match cli.command {
         Commands::Setup => config::setup(root)?,
@@ -139,6 +145,13 @@ fn execute(cli: Cli) -> Result<i32> {
             match command {
                 Commands::Run { name, command } => return run::execute(&project, &name, &command),
                 Commands::Task { selectors } => return turbo::task(&project, &selectors),
+                Commands::Turbo { arguments } => {
+                    let mut command = turbo::prepare_parent(&project, &arguments)?;
+                    // Parent Turbo may invoke concurrent `sources task` prerequisites.
+                    // Only the metadata snapshot is protected by this outer lock.
+                    drop(lock);
+                    return run::wait_command(&mut command, "parent Turbo").map(run::exit_code);
+                }
                 Commands::Fetch { names } => commands::fetch(&project, &names)?,
                 Commands::CheckRelease => commands::check_release(&project)?,
                 Commands::Lock { pins, check } => commands::lock(&project, &pins, check)?,
