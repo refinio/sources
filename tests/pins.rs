@@ -572,7 +572,11 @@ fn a_local_development_tag_can_be_pinned_despite_a_broken_managed_cache() {
 
     f.git(&dev, &["tag", "-d", "release"]);
     let output = f.cli().args(["lock", "a:tag=release"]).output().unwrap();
-    assert!(String::from_utf8_lossy(&output.stderr).contains(cached.to_str().unwrap()));
+    let diagnostic = String::from_utf8_lossy(&output.stderr).replace('\\', "/");
+    assert!(
+        diagnostic.contains(&cached.to_string_lossy().replace('\\', "/")),
+        "{diagnostic}"
+    );
     failure(output, "cannot resolve tag");
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
