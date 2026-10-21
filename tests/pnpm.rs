@@ -747,7 +747,7 @@ fn failed_file_install_can_be_retried_with_the_suggested_pnpm_command() {
     manifest["scripts"] = json!({"postinstall":"node -e \"require('node:fs').writeFileSync('install-retried', 'yes')\""});
     write_json(&path, &manifest);
     success(
-        n.f.command("pnpm")
+        n.f.command(if cfg!(windows) { "pnpm.cmd" } else { "pnpm" })
             .current_dir(&n.f.app)
             .env("CI", "true")
             .env("NPM_CONFIG_USERCONFIG", n.f.root.join("empty-npmrc"))
@@ -758,5 +758,39 @@ fn failed_file_install_can_be_retried_with_the_suggested_pnpm_command() {
     );
     assert!(n.f.app.join("install-retried").exists());
     success(n.cli().arg("dev").output().unwrap());
+    assert_eq!(n.require(), "local-a/local-b");
+}
+
+#[test]
+fn registry_check_downloads_published_archives_while_file_overrides_are_active() {
+    let n = NpmFixture::new();
+    success(n.cli().arg("dev").output().unwrap());
+    let lock = std::fs::read(n.f.app.join(".sources.lock")).unwrap();
+    let pnpm_lock = std::fs::read(n.f.app.join("pnpm-lock.yaml")).unwrap();
+    let yaml = std::fs::read(n.f.app.join("pnpm-workspace.yaml")).unwrap();
+    std::fs::write(n.f.root.join("deny-tarballs"), "").unwrap();
+    failure(
+        n.cli()
+            .args(["lock", "--registry", "--check", "@sources-probe/a:1.0.0"])
+            .output()
+            .unwrap(),
+        "registry download failed",
+    );
+    assert_eq!(std::fs::read(n.f.app.join(".sources.lock")).unwrap(), lock);
+    assert_eq!(
+        std::fs::read(n.f.app.join("pnpm-lock.yaml")).unwrap(),
+        pnpm_lock
+    );
+    assert_eq!(
+        std::fs::read(n.f.app.join("pnpm-workspace.yaml")).unwrap(),
+        yaml
+    );
+    std::fs::remove_file(n.f.root.join("deny-tarballs")).unwrap();
+    success(
+        n.cli()
+            .args(["lock", "--registry", "--check", "@sources-probe/a:1.0.0"])
+            .output()
+            .unwrap(),
+    );
     assert_eq!(n.require(), "local-a/local-b");
 }
