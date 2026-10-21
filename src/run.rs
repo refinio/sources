@@ -13,6 +13,12 @@ pub fn execute(project: &Project, name: &str, args: &[OsString]) -> Result<i32> 
         .sources
         .get(name)
         .with_context(|| format!("unknown source {name}"))?;
+    if source.registry_release() {
+        ensure!(
+            crate::pnpm::source_mode(project, name)? == "dev",
+            "{name}: published package selection has no active source checkout; run sources dev before sources run"
+        );
+    }
     let link = project.links().join(name);
     let metadata = std::fs::symlink_metadata(&link).with_context(|| {
         format!(
@@ -67,13 +73,34 @@ pub fn execute(project: &Project, name: &str, args: &[OsString]) -> Result<i32> 
     warn_changes(&git, name)?;
     let mut command = Command::new(&args[0]);
     command.args(&args[1..]).current_dir(&checkout);
+    let status = wait_command(&mut command, name)?;
+    if let Err(error) = warn_changes(&git, name) {
+        eprintln!(
+            "warning: {name}: cannot inspect source after command: {}",
+            sources::git::redact(&format!("{error:#}"))
+        );
+    }
+    #[cfg(unix)]
+    let code = status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
+    #[cfg(not(unix))]
+    let code = status.code().unwrap_or(1);
+    Ok(code)
+}
+
+/// Wait using the same terminal/job supervision policy for every locked command.
+pub(crate) fn wait_command(command: &mut Command, name: &str) -> Result<std::process::ExitStatus> {
     #[cfg(unix)]
     let status = if std::fs::File::open("/dev/tty").is_ok() {
         // Keep the shell's group even for background jobs and redirected streams.
         let mut signals = signal_hook::iterator::Signals::new([libc::SIGINT, libc::SIGTERM])?;
-        let child = command
-            .spawn()
-            .with_context(|| format!("cannot start command {:?} for {name}", args[0]))?;
+        let child = command.spawn().with_context(|| {
+            format!(
+                "cannot start command {:?} for {name}",
+                command.get_program()
+            )
+        })?;
         loop {
             for signal in signals.pending() {
                 // SIGINT reaches the child through the shell's job group already.
@@ -104,26 +131,19 @@ pub fn execute(project: &Project, name: &str, args: &[OsString]) -> Result<i32> 
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     } else {
-        wait_group(&mut command, name)?
+        wait_group(command, name)?
     };
     #[cfg(not(unix))]
     let status = command
         .spawn()
-        .with_context(|| format!("cannot start command {:?} for {name}", args[0]))?
+        .with_context(|| {
+            format!(
+                "cannot start command {:?} for {name}",
+                command.get_program()
+            )
+        })?
         .wait()?;
-    if let Err(error) = warn_changes(&git, name) {
-        eprintln!(
-            "warning: {name}: cannot inspect source after command: {}",
-            sources::git::redact(&format!("{error:#}"))
-        );
-    }
-    #[cfg(unix)]
-    let code = status
-        .code()
-        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
-    #[cfg(not(unix))]
-    let code = status.code().unwrap_or(1);
-    Ok(code)
+    Ok(status)
 }
 
 #[cfg(unix)]

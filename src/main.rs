@@ -6,6 +6,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 mod commands;
+mod pnpm;
 mod run;
 mod workspace;
 
@@ -38,14 +39,14 @@ enum Commands {
     Fetch { names: Vec<String> },
     /// Check and cache all locked release inputs without activation
     CheckRelease,
-    /// Point workspace links at validated development checkouts
+    /// Select development checkouts and install configured pnpm file dependencies
     Dev,
     /// Inspect actual workspace links, commits, and source changes locally
     Status {
         #[arg(long)]
         json: bool,
     },
-    /// Activate locked commits in managed checkouts
+    /// Activate pinned Git sources and install configured pnpm package releases
     Release {
         #[arg(long, conflicts_with = "offline")]
         clean: bool,

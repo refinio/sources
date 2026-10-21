@@ -5,7 +5,7 @@ description: Adopts and configures Sources for external Git checkouts at stable 
 
 # Set up Sources
 
-If adoption has not been requested and no `.sources.conf` exists, ask whether the user wants Sources before changing the project; wait for acceptance. Briefly explain that Sources keeps stable workspace links while switching between existing development checkouts and pinned managed clones. Existing Sources projects need no adoption question.
+If adoption has not been requested and no `.sources.conf` exists, ask whether the user wants Sources before changing the project; wait for acceptance. Briefly explain that Sources selects local development checkouts or fixed release inputs. Git releases use stable links; optional pnpm integration selects published packages. Existing Sources projects need no adoption question.
 
 1. Inspect the intended app root, external Git checkouts, dependency references, and existing configuration. Keep internal monorepo dependencies unchanged.
 2. Require Git and an installed `sources` CLI; check `git --version` and `sources --version`. If missing, use the platform installer in the [official README](https://github.com/refinio/sources#readme).
@@ -30,7 +30,7 @@ Ignored `.sources.local.conf`:
 
 `directory` and relative local paths resolve from the app root. Each local path must identify a Git checkout root with a matching remote; a fork may match through its `upstream` remote. Preserve original checkouts and their edits.
 
-Point workspace/package references at `sources/lib` or the required package below it, such as `sources/lib/packages/ui`; use these same paths for development and release. Adapt the project's existing package-manager syntax, regenerate its dependency lock when required, and avoid removing ordinary files/directories to make room for links.
+For Git releases, point workspace/package references at `sources/lib` or a package below it and keep these paths in both modes. For pnpm registry releases, add source `pnpm` mappings such as `"@example/ui": {"path":"packages/ui","version":"1.2.3"}`, keep consumers' ordinary package dependencies, and exclude mapped source packages from workspace membership. Require pnpm 10.15+, root `package.json` and `pnpm-workspace.yaml`; move legacy JSON pnpm overrides to YAML. Sources owns mapped package overrides across the graph and runs pnpm install during dev/release. See the [pnpm setup](https://github.com/refinio/sources#pnpm-local-and-published-packages). Never remove ordinary files/directories to make room for links.
 
 ```sh
 sources check
@@ -43,4 +43,4 @@ Ensure `.sources/`, `.sources.local.conf`, and generated workspace links are ign
 
 Everything inside `.sources/` and link objects directly inside the configured link directory are managed and replaceable; `sources release --clean` discards managed contents, while original development checkouts must remain intact.
 
-Report changed references, validation results, and any platform link-permission remedy. Sources selects source inputs; use existing project tooling for installation, builds, and tests. See the [README](https://github.com/refinio/sources#readme) for release pinning and command details.
+Report changed references, validation results, and any platform link-permission remedy. Opt-in pnpm switching may change workspace overrides and the pnpm lock; commit release-mode files together. Local file packages follow pnpm semantics and can require reinstalling after file changes. Use existing tooling for builds and tests. See the [README](https://github.com/refinio/sources#readme) for release pinning and command details.

@@ -24,6 +24,9 @@ pub fn fetch(project: &Project, names: &[String]) -> Result<()> {
             project.config.sources.contains_key(name),
             "unknown source {name}"
         );
+        if project.config.sources[name].registry_release() {
+            continue;
+        }
         let path = project.managed(name);
         if path.exists() {
             let repo = Git::at(&path);
@@ -32,6 +35,10 @@ pub fn fetch(project: &Project, names: &[String]) -> Result<()> {
         }
     }
     for name in selected {
+        if project.config.sources[&name].registry_release() {
+            println!("{name}: package release inputs are installed by sources release using pnpm");
+            continue;
+        }
         let revision = ensure_revision(
             &project.managed(&name),
             &project.config.sources[&name].url,
@@ -50,6 +57,9 @@ pub fn fetch(project: &Project, names: &[String]) -> Result<()> {
 pub fn check_release(project: &Project) -> Result<()> {
     let pins = project.pins(true)?;
     for (name, source) in &project.config.sources {
+        if source.registry_release() {
+            continue;
+        }
         let path = project.managed(name);
         if path.exists() {
             let repo = Git::at(&path);
@@ -61,6 +71,12 @@ pub fn check_release(project: &Project) -> Result<()> {
         }
     }
     for (name, source) in &project.config.sources {
+        if source.registry_release() {
+            println!(
+                "{name}: package release inputs are installed by sources release using pnpm; registry readiness not checked"
+            );
+            continue;
+        }
         let revision = ensure_revision(
             &project.managed(name),
             &source.url,
@@ -85,6 +101,9 @@ pub fn lock(project: &Project, updates: &[String], check: bool) -> Result<()> {
     let mut proposed = Vec::new();
     if updates.is_empty() {
         for (name, source) in &project.config.sources {
+            if source.registry_release() {
+                continue;
+            }
             let repo = Git::at(&project.dev(name)?);
             repo.validate(&source.url, false)
                 .with_context(|| format!("{name}: invalid development checkout"))?;
@@ -109,6 +128,10 @@ pub fn lock(project: &Project, updates: &[String], check: bool) -> Result<()> {
                 .sources
                 .get(name)
                 .with_context(|| format!("unknown source {name}"))?;
+            ensure!(
+                !source.registry_release(),
+                "{name}: pnpm package release versions are configured in .sources.conf; no Git pin is used"
+            );
             ensure!(seen.insert(name), "duplicate pin update for {name}");
             if let Some(tag) = input.strip_prefix("tag=") {
                 if check {

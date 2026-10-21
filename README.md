@@ -1,6 +1,6 @@
 # Sources
 
-`sources` selects development checkouts or exact release commits through stable workspace paths. Your package workspace keeps the same paths when switching between them. Sources invokes the installed Git executable and does not build packages or publish releases.
+`sources` selects development checkouts or exact release commits through stable workspace paths. Git source workspaces keep the same paths when switching between them. Optional pnpm integration switches local file dependencies to published package versions. Sources invokes the installed Git executable and does not build packages or publish releases.
 
 Linux and macOS are supported. Native Windows is best effort. Use Git 2.39.5 or newer, with the SSH and credential setup your repositories require. The CLI is experimental and currently promises no backwards compatibility.
 
@@ -128,17 +128,48 @@ sources status
 
 `--clean` recreates managed source checkouts and discards all their contents, including source edits, untracked files, dependencies, and ignored outputs. It does not clean the consuming app's own outputs. Record the app commit and `.sources.lock` with release evidence.
 
+## pnpm local and published packages
+
+For a pnpm project, opt a source into registry releases by adding its package names, paths within the development checkout, and exact published versions:
+
+```json
+"library": {
+  "url": "https://github.com/your-org/library.git",
+  "pnpm": {
+    "@your-org/core": {"path": "packages/core", "version": "1.2.3"},
+    "@your-org/ui": {"path": "packages/ui", "version": "2.0.0"}
+  }
+}
+```
+
+Place this entry inside `.sources.conf`'s `sources` map. Require pnpm 10.15 or newer, a root `package.json`, and `pnpm-workspace.yaml`. Consumers keep ordinary dependencies by package name. Keep these external packages out of pnpm workspace globs, including broad globs over `sources/`. Move legacy `package.json` pnpm overrides into the workspace YAML first.
+
+pnpm file paths must be valid Unicode and cannot contain literal Unix backslashes. These pnpm restrictions do not apply to Git-only sources.
+
+```sh
+sources dev       # file: overrides through local source links, then pnpm install
+sources release   # exact registry overrides, then pnpm install
+```
+
+Sources manages the corresponding root `overrides` in `pnpm-workspace.yaml`, including references between managed packages. It preserves unrelated settings and comments. This selection applies throughout the dependency graph. Both commands run `pnpm install --no-frozen-lockfile` and may change `pnpm-lock.yaml`; consumer `package.json` dependency declarations stay intact. Review and commit release-mode workspace configuration and the pnpm lock together. CI can then verify them with `pnpm install --frozen-lockfile`.
+
+Published-package sources do not need a Git pin, development mapping, or managed clone for release mode. Other sources in the same project can keep using exact Git commits. Set package release versions explicitly in `.sources.conf`; switching never selects `latest` or changes these versions. `lock`, `fetch`, and `check-release` manage Git inputs only.
+
+`release --offline` uses pnpm's offline store and existing Git caches. `--clean` clears Sources state, leaving the app's `node_modules`, store, and outputs to pnpm and existing build tooling. pnpm installation follows the project's lifecycle-script settings. Its `file:` dependencies may need reinstalling after new files, atomic saves, or generated output changes; they do not guarantee live symlink updates.
+
+`status` reports selected references, not installed-package verification. `sources run` requires a checkout, so use `sources dev` before running a command in a source currently selected as a registry release. If installation fails, fix the cause and rerun the intended Sources command.
+
 ## Commands
 
 | Command | Behavior |
 | --- | --- |
 | `setup` | Create missing configuration, directories, and ignore entries. |
 | `check` | Validate all development mappings and repository identities locally. |
-| `dev` | Point workspace links at validated development checkouts. |
+| `dev` | Select validated development checkouts; install configured pnpm file dependencies. |
 | `lock [name:commit or name:tag=tag ...] [--check]` | Capture development HEADs or update selected commit/tag pins atomically. `--check` caches inputs and selects named tags from upstream. |
 | `fetch [name ...]` | Contact selected upstreams and cache locked revisions, or default-branch tips for unpinned sources. Preserve existing checkout HEADs and links. |
-| `check-release` | Validate a complete lock and cache missing release inputs without activating them. |
-| `release` | Activate locked commits and recursive submodules in managed checkouts, then select their links. |
+| `check-release` | Cache complete Git release inputs without activating them; registry readiness is not checked. |
+| `release` | Activate pinned Git checkouts and install configured exact pnpm package releases. |
 | `release --clean` | Recreate disposable managed checkouts from upstream and activate the lock. |
 | `release --offline` | Activate complete cached inputs with no tool-initiated network access. Cannot combine with `--clean`. |
 | `status [--json]` | Inspect links, mode, commits, changes, and local cache readiness. JSON has a versioned top-level schema. |
@@ -146,7 +177,7 @@ sources status
 
 Use `sources --help` or `sources <command> --help` for syntax. Results go to stdout; warnings and errors go to stderr. Exit codes are `0` for success, `1` for operational or validation failure, and `2` for invalid syntax. Once a child starts, `run` preserves its exit status. Shell expressions require an explicit shell, such as `sources run library -- sh -c 'build && test'`.
 
-`check`, `dev`, `status`, and ordinary `lock` do not fetch. `run` does not fetch itself, though its child may use the network. Online release and readiness commands can reuse cached objects. `fetch` contacts every selected upstream even when cached.
+`check`, `status`, and ordinary `lock` do not fetch. `dev` never fetches Git repositories; opted-in pnpm installs may access the package registry. `run` does not fetch itself, though its child may use the network. Online release and readiness commands can reuse cached objects. `fetch` contacts every selected upstream even when cached.
 
 ## Fetching and ownership
 
@@ -167,7 +198,7 @@ Multi-source activation is not atomic. An interruption may leave partial checkou
 - `sources release` reapplies pins when managed clones remain usable.
 - `sources release --clean` recreates broken managed contents, discarding their files.
 
-There is no rollback journal or saved mode flag. `status` derives `dev`, `release`, `mixed`, or `unconfigured` from actual links. Links in release mode can still have commit or submodule mismatches, which status reports separately.
+There is no rollback journal or saved mode flag. `status` derives `dev`, `release`, `mixed`, or `unconfigured` from actual links and opt-in pnpm override entries. Links in release mode can still have commit or submodule mismatches, which status reports separately.
 
 All project commands take one exclusive advisory lock at `.sources/project.lock`. A busy lock fails immediately. On Unix, `run` with an accessible controlling terminal keeps the shell's process group, including in pipelines, with redirected streams, or in background jobs. The shell controls terminal ownership and job suspension. Sources holds the lock until its direct child exits. Terminal interrupts reach the shell job group naturally; Sources absorbs its own interactive `SIGINT`, so programmatic interruption must target the job group. A `SIGTERM` sent explicitly to Sources is forwarded to its direct child. Interactive commands must wait for their own workers; workers left behind afterward are outside the lock and supervision guarantee.
 
@@ -175,7 +206,7 @@ Without a controlling terminal, `run` uses a dedicated child process group, forw
 
 ## Development
 
-The acceptance tests invoke the public CLI with real temporary Git repositories, filesystem links, and child processes. They isolate Git configuration and use loopback Git and HTTP fixtures. Python 3 is needed for the dumb-HTTP fixture. Failed test fixtures remain on disk, with their paths printed for inspection.
+The acceptance tests invoke the public CLI with real temporary Git repositories, filesystem links, and child processes. They isolate Git configuration and use loopback Git and HTTP fixtures. Python 3 is needed for the HTTP and npm registry fixtures. Node 24.22.1 and pnpm 10.15.0 exercise actual package installations against the loopback registry. Failed test fixtures remain on disk, with their paths printed for inspection.
 
 ```sh
 cargo fmt --check
