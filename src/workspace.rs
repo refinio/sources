@@ -361,7 +361,7 @@ pub fn status(project: &Project, json: bool) -> Result<i32> {
                         active_links += 1;
                         row.active_mode = "release".into();
                         if fs::symlink_metadata(&path).is_ok() {
-                            row.errors.push("published package selection still has a workspace entry; run sources release".into());
+                            row.errors.push("published package selection still has a workspace entry; run sources release --registry".into());
                         }
                         rows.insert(name.clone(), row);
                         continue;

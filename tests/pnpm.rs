@@ -794,3 +794,22 @@ fn registry_check_downloads_published_archives_while_file_overrides_are_active()
     );
     assert_eq!(n.require(), "local-a/local-b");
 }
+
+#[test]
+fn registry_status_repairs_a_stale_checkout_link_without_changing_selection() {
+    let n = NpmFixture::new();
+    success(n.cli().args(["release", "--registry"]).output().unwrap());
+    let link = n.f.app.join("sources/sdk");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&n.dev, &link).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&n.dev, &link).unwrap();
+    failure(
+        n.cli().args(["status", "--json"]).output().unwrap(),
+        "run sources release --registry",
+    );
+    success(n.cli().args(["release", "--registry"]).output().unwrap());
+    assert!(!link.exists());
+    assert_eq!(n.require(), "registry-a/registry-b");
+    success(n.cli().args(["status", "--json"]).output().unwrap());
+}
