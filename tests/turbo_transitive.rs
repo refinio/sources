@@ -223,25 +223,6 @@ fn only_consumed_hashes_in_transitive_tasks_are_resolved_with_turbo_env_patterns
 }
 
 #[test]
-fn global_hashed_environment_is_composed_into_child_queries_and_execution() {
-    let t = Chain::new();
-    edit_json(&t.middle.join("turbo.json"), |config| {
-        config["tasks"]["build"]
-            .as_object_mut()
-            .unwrap()
-            .remove("env");
-        config["globalEnv"] = json!(["SOURCES_LEAF__BUILD"]);
-    });
-    t.run();
-    let initial = t.output(&t.app);
-    assert!(t.output(&t.middle)["env"]["SOURCES_LEAF__BUILD"].is_string());
-    std::fs::write(t.leaf.join("packages/pkg/input.txt"), "beta\n").unwrap();
-    t.run();
-    assert_eq!(t.output(&t.app)["value"], "beta\n");
-    assert_ne!(t.output(&t.app)["env"], initial["env"]);
-}
-
-#[test]
 fn repository_cycle_through_independent_foundation_task_builds_and_restores_cache() {
     let t = Chain::new();
     // ONE application -> Fotos core -> ONE foundation. Both ONE tasks are

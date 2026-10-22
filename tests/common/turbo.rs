@@ -90,57 +90,6 @@ impl TurboFixture {
         command
     }
 
-    pub fn add_source(&self, name: &str, package: &str) -> PathBuf {
-        let child = self.f.repo(name);
-        let upstream = self.f.root.join("upstream");
-        self.f.git(
-            &child,
-            &["remote", "add", "origin", upstream.to_str().unwrap()],
-        );
-        for file in [
-            "package.json",
-            "pnpm-workspace.yaml",
-            "turbo.json",
-            "task.cjs",
-            ".gitignore",
-        ] {
-            std::fs::copy(self.child.join(file), child.join(file)).unwrap();
-        }
-        let directory = child.join("packages/other");
-        std::fs::create_dir_all(&directory).unwrap();
-        write_json(
-            &directory.join("package.json"),
-            &json!({"name":package,"version":"1.0.0","scripts":{
-                "prepare":"node ../../task.cjs prepare",
-                "build":"node ../../task.cjs build",
-                "pack":"node ../../task.cjs pack"
-            }}),
-        );
-        success(
-            pnpm(&self.f, &child)
-                .args(["install", "--offline", "--ignore-scripts"])
-                .output()
-                .unwrap(),
-        );
-        install_turbo(&child);
-        self.f.git(&child, &["add", "."]);
-        self.f
-            .git(&child, &["commit", "-qm", "Additional Turbo source"]);
-        let path = self.f.app.join(".sources.conf");
-        let mut config: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        config["sources"][name] =
-            json!({"url":upstream,"packages":{package:{"tasks":["build","pack"]}}});
-        write_json(&path, &config);
-        let path = self.f.app.join(".sources.local.conf");
-        let mut local: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        local["sources"][name] = json!(child);
-        write_json(&path, &local);
-        success(self.cli().arg("dev").output().unwrap());
-        child
-    }
-
     pub fn parent(&self) {
         write_json(
             &self.f.app.join("package.json"),

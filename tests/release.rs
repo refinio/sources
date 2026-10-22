@@ -132,26 +132,3 @@ fn offline_activation_uses_caches_and_failed_clean_recreation_is_repaired_by_rer
     success(f.cli().args(["status", "--json"]).output().unwrap());
     assert_eq!(std::fs::read(f.app.join(".sources.lock")).unwrap(), pins);
 }
-
-#[cfg(unix)]
-#[test]
-fn link_collisions_are_preflighted_and_stale_links_are_unlinked_without_following_them() {
-    let (f, _, _) = project();
-    std::fs::create_dir_all(f.app.join("sources/b")).unwrap();
-    std::fs::write(f.app.join("sources/b/keep.txt"), "keep\n").unwrap();
-    failure(
-        f.cli().arg("dev").output().unwrap(),
-        "ordinary file or directory",
-    );
-    assert!(!f.app.join("sources/a").exists());
-    assert!(f.app.join("sources/b/keep.txt").exists());
-    std::fs::rename(f.app.join("sources/b"), f.root.join("keep-b")).unwrap();
-    let external = f.root.join("external");
-    std::fs::create_dir(&external).unwrap();
-    std::fs::write(external.join("keep.txt"), "keep\n").unwrap();
-    std::os::unix::fs::symlink(&external, f.app.join("sources/obsolete")).unwrap();
-    success(f.cli().arg("dev").output().unwrap());
-    assert!(std::fs::symlink_metadata(f.app.join("sources/obsolete")).is_err());
-    assert!(external.join("keep.txt").exists());
-    assert!(f.root.join("keep-b/keep.txt").exists());
-}

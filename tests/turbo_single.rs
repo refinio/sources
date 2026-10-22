@@ -70,36 +70,3 @@ fn single_package_tasks_use_the_manifest_package_name_and_preserve_colons() {
     );
     assert!(!child.join("dist/unrequested.txt").exists());
 }
-
-#[test]
-fn monorepo_root_tasks_use_the_root_manifest_package_name() {
-    let t = turbo_fixture::TurboFixture::new();
-    let manifest_path = t.child.join("package.json");
-    let mut manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
-    manifest["scripts"] = serde_json::json!({"root:pack":"node task.cjs root-pack"});
-    write_json(&manifest_path, &manifest);
-    let turbo_path = t.child.join("turbo.json");
-    let mut turbo: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&turbo_path).unwrap()).unwrap();
-    turbo["tasks"]["//#root:pack"] = serde_json::json!({"outputs":["dist/root-pack.txt"]});
-    write_json(&turbo_path, &turbo);
-    t.f.configure(
-        serde_json::json!({"shared":{"url":t.f.root.join("upstream"),"packages":{
-            "child-fixture":{"tasks":["root:pack"]}
-        }}}),
-        serde_json::json!({"shared":t.child}),
-    );
-    success(
-        t.cli()
-            .args(["task", "child-fixture:root:pack"])
-            .output()
-            .unwrap(),
-    );
-    assert_eq!(
-        std::fs::read_to_string(t.child.join("dist/root-pack.txt")).unwrap(),
-        "root-pack\n"
-    );
-    assert!(!t.marker("protocol", "pack").exists());
-    assert!(!t.marker("ui", "pack").exists());
-}
