@@ -94,6 +94,48 @@ The value is the selected task's Turbo hash, unchanged. Every configured task ge
 
 A Turbo task hash is an input-derived cache key, not a cryptographic checksum of artifact bytes. Correctness depends on the child's declared inputs, task dependencies, relevant environment/toolchain, and deterministic outputs. Sources does not repair an incorrect Turbo graph or promise content integrity from its cache key.
 
+## Composing direct edges across repositories
+
+A child may itself be a Sources project. Keep each consuming repository configured for its direct dependencies. When C consumes B and B consumes A, B's Turbo task declares A's managed hash in `env`, and C declares only B's hash. Changes in A then change B's actual Turbo hash and propagate to C. No ancestor needs to duplicate the transitive configuration.
+
+For each selected child task, Sources first uses Turbo dry-run metadata to discover the managed environment inputs consumed by that task and its transitive Turbo prerequisites. A discovery query supplies the child project's configured variable names with empty placeholder values so Turbo itself expands environment patterns and exclusions. Sources resolves only the consumed configured package/task pairs, then repeats the query with their actual hashes. Global hashed environment declarations also participate. Placeholders never enter exported hashes or task execution.
+
+Both the final metadata query and `sources task` execution use the child's computed snapshot. All inherited `SOURCES_*` values are removed first. Child repositories without `.sources.conf` at their root retain ordinary Turbo behavior with the managed namespace cleared. Missing or unused external environment names do not authorize implicit sources or task selection.
+
+Resolution follows checkout and selected task identities, not repository edges alone. For example, ONE's application task may consume Fotos.core, which consumes ONE's independent foundation task. This repository cycle works when the selected task hash graph is acyclic. A genuine cycle fails before execution, reports the checkout/task path, and asks the caller to remove the cyclic `SOURCES_*` task environment dependency. Independent selected tasks are resolved separately, and shared task snapshots are reused within one CLI invocation.
+
+Hash composition preserves the existing execution lock contract. `sources task` holds the invoking project's lock while child Turbo runs. Prerequisite scripts must not reenter a project lock held by an ancestor process. Such nested project operations remain unsupported, as specified in the core CLI contract. An acyclic hash graph alone does not authorize arbitrary recursive command execution.
+
+The public CLI regression suite covers the natural three-repository chain, leaf edits, downstream hash changes, unchanged cache hits, and restoration after all build outputs are deleted. The suite also covers task granularity, transitive task environment declarations, wildcard exclusions, global environment inputs, repository cycles through independent tasks, and genuine task hash cycles. These guarantees preserve Turbo's ownership of hashes, scheduling, outputs, and caches. This change does not add output staging, package snapshot refresh, or dependency installation.
+
+## Bootstrapping selected packages in repository cycles
+
+Hash composition requires active checkouts and installed local Turbo. It does not bootstrap nested Sources projects. `sources release` activates only its own project's direct pinned Git checkouts and their Git submodules; it does not recursively interpret the checkouts' `.sources.conf` files or share an ancestor's checkout selections.
+
+A finite selected package graph can use native filtered frozen pnpm installs even when the repository graph contains a cycle. Select the private tooling root and the exact required packages with their dependency closures. For example, an application in ONE may consume Fotos core, which consumes ONE foundation. Activate the needed source edges explicitly, then install and build from foundation toward the application. The following fixture names illustrate the sequence; substitute the actual root and package names from each owning repository:
+
+```sh
+sources release
+sources -C sources/fotos release
+
+pnpm --dir sources/fotos/sources/one --filter one-tooling --filter '@fixture/one-foundation...' install --frozen-lockfile
+sources -C sources/fotos task @fixture/one-foundation:build
+
+pnpm --dir sources/fotos --filter fotos-tooling --filter '@fixture/fotos-core...' install --frozen-lockfile
+sources task @fixture/fotos-core:build
+
+pnpm --filter one-tooling --filter '@fixture/one-app...' install --frozen-lockfile
+sources turbo run build --filter=@fixture/one-app
+```
+
+For several independent foundation packages, list each required `--filter '<package>...'`; one selector suffices only when its dependency closure includes them all. Include the owning private root so its pinned Turbo and other build tools are installed. `--offline` is optional and requires the package store to be populated. The examples use Git sources without registry-selection mappings, so activation and pnpm installation remain separate explicit steps.
+
+The foundation checkout's unselected application may reference `sources/fotos` without activating that edge. Its own Sources configuration remains present, but the selected foundation tasks must not consume that external hash or require that directory. The two ONE checkouts may have different commits: each selected checkout must honor the Git pin of its immediate consuming project. Do not substitute an ancestor checkout for a different child pin.
+
+This workflow was verified with pnpm 10.15.0, real Git release checkouts, committed frozen locks, and Turbo 2.7.6 installed by pnpm. A disposable workspace with an unselected missing directory-file dependency installed its tooling root and selected package dependency closure with a fresh store, leaving the unselected importer uninstalled and the lock unchanged. Whole-workspace frozen installation failed on the missing target. A separate ONE/Fotos release fixture then completed the directed build above while the foundation owner's nested Fotos link stayed absent; both selected managed commits matched their Sources pins and all pnpm locks stayed unchanged. Ordinary lifecycle-script handling was used in that release fixture.
+
+This proves the selected-closure workflow, not recursive activation of every embedded Sources project or whole-workspace installation. Actual repository filters, frozen locks, internal file dependencies, tooling-root dependencies, and lifecycle scripts must respect that closure. Build each source output before installing the downstream directory-file package that snapshots it. If a required selected importer or lifecycle script needs the missing reverse edge, filtering does not solve that graph; assess that separately instead of adding unbounded recursive activation. The actual consuming repositories still require their own integration validation.
+
 ## Command: `sources task`
 
 Syntax:

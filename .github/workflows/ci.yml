@@ -100,7 +100,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked --no-fail-fast -- --nocapture
-        timeout-minutes: 8
+        # Real Git/pnpm/Turbo acceptance tests need more time on Intel macOS.
+        timeout-minutes: 12
         env:
           TMPDIR: ${{ runner.temp }}
           TMP: ${{ runner.temp }}

@@ -207,7 +207,7 @@ sources turbo run build --filter=@app/web
 
 For example, `@example/protocol:pack:app` exports `SOURCES_EXAMPLE_PROTOCOL__PACK_APP`. Declare only the hash variables a parent task consumes in its Turbo `env` list. Use an uncached parent preparation task that invokes `sources task` for required child outputs, then depend on that preparation task. Turbo owns the graph and cache; artifact staging and pnpm file-dependency refresh remain explicit workflow steps. Install local Turbo in the parent too.
 
-The outer lock is released before parent Turbo starts so nested task calls work. Keep configuration, checkout selection, and source contents stable during that parent build. Inherited `SOURCES_` values are cleared from all Turbo invocations; only parent Turbo receives the fresh snapshot. See [the bridge contract](docs/turbo-integration-spec.md) for a complete configuration example.
+The outer lock is released before parent Turbo starts so nested task calls work. Keep configuration, checkout selection, and source contents stable during that parent build. Inherited `SOURCES_` values are cleared from all Turbo invocations. Parent Turbo receives its complete fresh snapshot; a configured child receives its own selected graph's relevant source hashes consistently for hash queries and execution. See [the bridge contract](docs/turbo-integration-spec.md) for a complete configuration example.
 
 ## Commands
 
