@@ -34,11 +34,6 @@ jobs:
             git: 2.56.0
             target: aarch64-apple-darwin
             experimental: false
-          - label: macOS / Intel
-            os: macos-15-intel
-            git: 2.56.0
-            target: x86_64-apple-darwin
-            experimental: false
           - label: Windows / best effort
             os: windows-2022
             git: bundled
@@ -103,7 +98,7 @@ jobs:
         run: cargo test --locked --no-run
         timeout-minutes: 5
       - run: cargo test --locked --no-fail-fast -- --nocapture
-        # Keep Intel macOS's test-execution budget separate from compilation.
+        # Keep the test-execution budget separate from compilation.
         timeout-minutes: 12
         env:
           TMPDIR: ${{ runner.temp }}

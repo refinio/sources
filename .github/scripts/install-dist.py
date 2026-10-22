@@ -16,10 +16,6 @@ ASSETS = {
         "x86_64-unknown-linux-gnu.tar.xz",
         "4b3f0a5f0ebbdb798f6db649d01b32ba1518376b6f7a0502b7d92b75cc2c8293",
     ),
-    ("Darwin", "x86_64"): (
-        "x86_64-apple-darwin.tar.xz",
-        "6a49bfb61bd86770d79c27f3d2b40c6b2e71cde940d3d31a6ccaaffc124d7a29",
-    ),
     ("Darwin", "arm64"): (
         "aarch64-apple-darwin.tar.xz",
         "7b3cbe25511de01d74c0f5fcb7909edabd379bea9cfa284d93af5a3cdfa3247c",

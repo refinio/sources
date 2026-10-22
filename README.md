@@ -2,11 +2,11 @@
 
 `sources` selects development checkouts or exact release commits through stable workspace paths. Git source workspaces keep the same paths when switching between them. Optional pnpm integration switches local file dependencies to published package versions. Sources invokes the installed Git executable and does not build packages or publish releases.
 
-Linux and macOS are supported. Native Windows is best effort. Use Git 2.39.5 or newer, with the SSH and credential setup your repositories require. The CLI is experimental and currently promises no backwards compatibility.
+Linux and Apple silicon macOS are supported. Native Windows is best effort. Use Git 2.39.5 or newer, with the SSH and credential setup your repositories require. The CLI is experimental and currently promises no backwards compatibility.
 
 ## Install
 
-Install the latest stable GitHub Release on Linux x86-64 or macOS Intel/Apple silicon:
+Install the latest stable GitHub Release on Linux x86-64 or Apple silicon macOS:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/refinio/sources/releases/latest/download/sources-installer.sh | sh
@@ -260,7 +260,7 @@ Without a controlling terminal, `run` uses a dedicated child process group, forw
 
 ## Development
 
-The acceptance tests invoke the public CLI with real temporary Git repositories, filesystem links, and child processes. They isolate Git configuration and use loopback Git and HTTP fixtures. Python 3 is needed for the HTTP and npm registry fixtures. Node 24.22.1 and pnpm 10.15.0 exercise actual package installations against the loopback registry. Turbo tests also require the real Turbo 2.7.6 npm distribution. Install it outside this checkout with `npm install --prefix /tmp/sources-turbo-tools turbo@2.7.6`, then set `SOURCES_TEST_TURBO` to its platform native executable, for example `/tmp/sources-turbo-tools/node_modules/turbo-linux-64/bin/turbo` on Linux x86-64. macOS uses `turbo-darwin-64` or `turbo-darwin-arm64`; Windows uses `turbo-windows-64/bin/turbo.exe`. Keep the sibling `turbo` package installed too. Acceptance fixtures copy this installed tool and bootstrap dependency-free workspaces offline; `cargo test` does not download Turbo. Failed test fixtures remain on disk, with their paths printed for inspection.
+The acceptance tests invoke the public CLI with real temporary Git repositories, filesystem links, and child processes. They isolate Git configuration and use loopback Git and HTTP fixtures. Python 3 is needed for the HTTP and npm registry fixtures. Node 24.22.1 and pnpm 10.15.0 exercise actual package installations against the loopback registry. Turbo tests also require the real Turbo 2.7.6 npm distribution. Install it outside this checkout with `npm install --prefix /tmp/sources-turbo-tools turbo@2.7.6`, then set `SOURCES_TEST_TURBO` to its platform native executable, for example `/tmp/sources-turbo-tools/node_modules/turbo-linux-64/bin/turbo` on Linux x86-64. macOS uses `turbo-darwin-arm64`; Windows uses `turbo-windows-64/bin/turbo.exe`. Keep the sibling `turbo` package installed too. Acceptance fixtures copy this installed tool and bootstrap dependency-free workspaces offline; `cargo test` does not download Turbo. Failed test fixtures remain on disk, with their paths printed for inspection.
 
 ```sh
 cargo fmt --check
@@ -268,13 +268,13 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-CI builds checksum-pinned Git 2.56.0 on Linux and macOS and also tests Git 2.39.5 on Linux. Native macOS tests cover Intel and Apple silicon. Windows CI uses the runner's Git and is allowed to fail. Separate release-candidate jobs build archives and test extracted executables and installers. Rust and Cargo dependencies are pinned by `rust-toolchain.toml` and `Cargo.lock`; hosted runner system libraries still come from their OS images.
+CI builds checksum-pinned Git 2.56.0 on Linux and macOS and also tests Git 2.39.5 on Linux. Native macOS tests run on Apple silicon. Windows CI uses the runner's Git and is allowed to fail. Separate release-candidate jobs build archives and test extracted executables and installers. Rust and Cargo dependencies are pinned by `rust-toolchain.toml` and `Cargo.lock`; hosted runner system libraries still come from their OS images.
 
 ## Publish a Sources release
 
 Update the Cargo package version and lockfile, commit the change, and manually publish a GitHub Release with the matching tag, such as `v0.1.0`. Publishing from the GitHub UI or `gh release create` triggers the release workflow, including when publishing a saved draft or prerelease. Saving an unpublished draft does not trigger a build.
 
-The workflow checks out that exact tag, checks its version, builds native Linux x86-64, macOS Intel/Apple silicon, and Windows x86-64 archives, and tests packaged executables and installers. After all four platform builds succeed, it uploads the archives, checksums, and generated shell/PowerShell installers to the existing release. Wait for the workflow to finish before sharing installation commands. The workflow does not create releases or push tags; normal pushes never publish assets.
+The workflow checks out that exact tag, checks its version, builds native Linux x86-64, Apple silicon macOS, and Windows x86-64 archives, and tests packaged executables and installers. After all three platform builds succeed, it uploads the archives, checksums, and generated shell/PowerShell installers to the existing release. Wait for the workflow to finish before sharing installation commands. The workflow does not create releases or push tags; normal pushes never publish assets.
 
 Pull requests and manual candidate runs verify distribution without uploading GitHub Release assets. cargo-dist 0.33.0, Rust, and Cargo dependencies are pinned. Windows runtime support remains best effort, while every advertised release archive must build and pass its installation checks.
 

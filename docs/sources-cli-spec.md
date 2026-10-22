@@ -14,13 +14,13 @@ There are no Sources environment-variable overrides for source locations. pnpm r
 
 Implement the CLI in Rust and invoke the installed Git executable with separate arguments, without an implicit shell. Use Git's machine-readable output for inspection. Git remains an installation prerequisite; users do not need a Rust toolchain.
 
-Linux and macOS are the supported platforms for version 1. Native Windows support is best effort, including directory junctions where appropriate. Platform limitations must produce useful errors. Public distribution publishes the advertised platform archives together after their builds and installation checks succeed.
+Linux and Apple silicon macOS are the supported platforms for version 1. Native Windows support is best effort, including directory junctions where appropriate. Platform limitations must produce useful errors. Public distribution publishes the advertised platform archives together after their builds and installation checks succeed.
 
 Distribute prebuilt binaries with a single installation command for each platform. Shell and PowerShell installers can be generated with cargo-dist. Pin build dependencies and toolchains, and test the packaged executable as well as the development build.
 
 ### Public distribution and agent skills
 
-Distribute Sources under the MIT license from `refinio/sources` on GitHub. Publishing a GitHub Release manually, including publishing a saved draft or prerelease, triggers native builds for Linux x86-64, macOS Intel, macOS Apple silicon, and Windows x86-64. Check out the release tag and require its version to match the Cargo package version. Build and verify every archive before uploading binaries, checksums, and generated shell/PowerShell installers to that existing release. Ordinary pushes do not create releases. Read-only candidate builds may run on pull requests or manual dispatch without publishing assets.
+Distribute Sources under the MIT license from `refinio/sources` on GitHub. Publishing a GitHub Release manually, including publishing a saved draft or prerelease, triggers native builds for Linux x86-64, macOS Apple silicon, and Windows x86-64. Check out the release tag and require its version to match the Cargo package version. Build and verify every archive before uploading binaries, checksums, and generated shell/PowerShell installers to that existing release. Ordinary pushes do not create releases. Read-only candidate builds may run on pull requests or manual dispatch without publishing assets.
 
 The single-command installers use GitHub Releases to select a release and detect the computer's platform. The default command selects the latest stable release; versioned release URLs select an exact version or prerelease. Git remains required, but Rust and the GitHub CLI are not needed to install a binary. After successful installation, print `npx skills add refinio/sources`; do not run it automatically or print a success instruction after installation fails.
 
@@ -485,7 +485,7 @@ Each scenario creates an app project, at least two source upstreams, development
 
 Isolate user and system Git configuration, identity, credential prompts, hooks/templates, and inherited repository-selection variables. Fix author and committer identities and timestamps, default branch names, line-ending settings, locale, and fixture file bytes. Pin the main CI toolchain and Git version and include a supported-minimum Git job. Preserve the fixture and a redacted command log when a test fails.
 
-Run the required suite natively on Linux and macOS. A Linux container can provide an additional repeatable baseline but cannot substitute for native filesystem tests. Run a best-effort Windows job for directory links, path handling, and child execution. Track Windows failures without blocking supported-platform releases.
+Run the required suite natively on Linux and Apple silicon macOS. A Linux container can provide an additional repeatable baseline but cannot substitute for native filesystem tests. Run a best-effort Windows job for directory links, path handling, and child execution. Track Windows failures without blocking supported-platform releases.
 
 Exercise interruption, network failure, and concurrent operations using explicit synchronization points rather than timing sleeps. After partial activation, assert that the next relevant command reports breakage and a repair command, then assert that rerunning that command repairs it. Do not assert rollback or preservation of disposable managed edits during clean recreation.
 
