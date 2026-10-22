@@ -99,8 +99,11 @@ jobs:
           pnpm --version
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Build acceptance test executables
+        run: cargo test --locked --no-run
+        timeout-minutes: 5
       - run: cargo test --locked --no-fail-fast -- --nocapture
-        # Real Git/pnpm/Turbo acceptance tests need more time on Intel macOS.
+        # Keep Intel macOS's test-execution budget separate from compilation.
         timeout-minutes: 12
         env:
           TMPDIR: ${{ runner.temp }}
