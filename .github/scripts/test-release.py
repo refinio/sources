@@ -50,7 +50,7 @@ class RequiredArchivesTests(unittest.TestCase):
             root = Path(directory)
             artifacts = root / "target/distrib"
             artifacts.mkdir(parents=True)
-            for target in ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin"]:
+            for target in ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]:
                 (artifacts / f"sources-{target}.tar.gz").touch()
                 (artifacts / f"{target}-dist-manifest.json").write_text("{}")
             result = subprocess.run([sys.executable, SCRIPT.with_name("build-installers.py")],

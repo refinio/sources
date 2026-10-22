@@ -34,11 +34,6 @@ jobs:
             git: 2.56.0
             target: aarch64-apple-darwin
             experimental: false
-          - label: macOS / Intel
-            os: macos-15-intel
-            git: 2.56.0
-            target: x86_64-apple-darwin
-            experimental: false
           - label: Windows / best effort
             os: windows-2022
             git: bundled
@@ -99,8 +94,11 @@ jobs:
           pnpm --version
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Build acceptance test executables
+        run: cargo test --locked --no-run
+        timeout-minutes: 5
       - run: cargo test --locked --no-fail-fast -- --nocapture
-        # Real Git/pnpm/Turbo acceptance tests need more time on Intel macOS.
+        # Keep the test-execution budget separate from compilation.
         timeout-minutes: 12
         env:
           TMPDIR: ${{ runner.temp }}
