@@ -29,6 +29,20 @@ result = subprocess.run(command, check=True, stdout=subprocess.PIPE)
 json.loads(result.stdout)
 (artifacts / "global-dist-manifest.json").write_bytes(result.stdout)
 
+# cargo-dist 0.33.0 migrates legacy env scripts even for unmanaged/no-PATH
+# installs. Such scripts may be sourced by custom profiles it cannot update.
+# Keep generation fail-closed if the pinned upstream template changes.
+installer = artifacts / "sources-installer.sh"
+script = installer.read_text(encoding="utf-8")
+legacy_migration = '''        if [ "$NO_MODIFY_PATH" = "0" ] ||
+            is_dist_env_script_sh "$_install_dir_expr" "$_legacy_env_script_path" ||
+            is_dist_env_script_fish "$_install_dir_expr" "$_legacy_fish_env_script_path"
+'''
+if script.count(legacy_migration) != 1:
+    raise SystemExit("Unexpected cargo-dist legacy env migration guard; review no-PATH installer behavior")
+script = script.replace(legacy_migration, '        if [ "$NO_MODIFY_PATH" = "0" ]\n')
+installer.write_text(script, encoding="utf-8")
+
 checksums = {}
 for line in (artifacts / "sha256.sum").read_text(encoding="utf-8").splitlines():
     if line.strip():
