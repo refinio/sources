@@ -42,15 +42,59 @@ try:
         for success in [True, False]:
             with tempfile.TemporaryDirectory(prefix="sources-installer-") as directory:
                 root = Path(directory)
-                prefix = root / "installed"
+                prefix = root / ".local/bin"
                 env = {key: value for key, value in os.environ.items()
                        if not key.startswith(("SOURCES_", "INSTALLER_", "CARGO_DIST_"))}
                 env.update({override: base if success else base + "/missing",
                             "SOURCES_UNMANAGED_INSTALL": str(prefix),
                             "SOURCES_NO_MODIFY_PATH": "1"})
+                preserved = {}
+                if not windows:
+                    # Exercise existing generated scripts, including references
+                    # from a custom profile outside cargo-dist's migration list.
+                    prefix.mkdir(parents=True)
+                    preserved = {
+                        prefix / "env": '''#!/bin/sh
+# add binaries to PATH if they aren't added yet
+# affix colons on either side of $PATH to simplify matching
+case ":${PATH}:" in
+    *:"$HOME/.local/bin":*)
+        ;;
+    *)
+        # Prepending path in case a system-installed binary needs to be overridden
+        export PATH="$HOME/.local/bin:$PATH"
+        ;;
+esac
+''',
+                        prefix / "env.fish": '''if not contains "$HOME/.local/bin" $PATH
+    # Prepending path in case a system-installed binary needs to be overridden
+    set -x PATH "$HOME/.local/bin" $PATH
+end
+''',
+                        root / ".profile": '. "$HOME/.local/bin/env"\n',
+                        root / ".zpath": '. "$HOME/.local/bin/env"\n',
+                        root / ".config/fish/conf.d/sources.env.fish":
+                            'source "$HOME/.local/bin/env.fish"\n',
+                    }
+                    for path, contents in preserved.items():
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(contents, encoding="utf-8")
+                    env.update(HOME=str(root), XDG_CONFIG_HOME=str(root / ".config"),
+                               ZDOTDIR=str(root), GITHUB_PATH=str(root / "github-path"))
+                    # Unmanaged installs alone must also imply no path changes.
+                    if override == "INSTALLER_DOWNLOAD_URL":
+                        env.pop("SOURCES_NO_MODIFY_PATH")
                 before = len(requests)
                 result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=90)
                 output = result.stdout + result.stderr
+                for path, contents in preserved.items():
+                    if not path.is_file() or path.read_text(encoding="utf-8") != contents:
+                        raise SystemExit(f"Installer modified existing shell configuration: {path}\n{output}")
+                if not windows:
+                    for path in [root / ".config/sources/env.sh", root / ".config/sources/env.fish",
+                                 root / "github-path"]:
+                        if path.exists():
+                            raise SystemExit(f"Installer changed PATH configuration: {path}\n{output}")
                 binary = prefix / ("sources.exe" if windows else "sources")
                 instruction = "npx skills add refinio/sources"
                 if success:
