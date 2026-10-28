@@ -70,7 +70,7 @@ try:
                         failed_env = dict(update_env, SOURCES_DOWNLOAD_URL=base + "/missing")
                         failed_update = subprocess.run([binary, "update"], cwd=root, env=failed_env,
                                                        capture_output=True, text=True, timeout=90)
-                        if failed_update.returncode == 0 or "ERROR" not in failed_update.stderr or "npx skills update" in failed_update.stdout:
+                        if failed_update.returncode == 0 or "failed to download" not in failed_update.stderr or "npx skills update" in failed_update.stdout:
                             raise SystemExit(f"Self-update lost installer failure diagnostics:\n{failed_update.stdout}\n{failed_update.stderr}")
                         before_update = len(requests)
                         updated = subprocess.run([binary, "update"], cwd=root, env=update_env,
