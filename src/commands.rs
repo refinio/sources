@@ -4,6 +4,54 @@ use sources::config::{self, LOCK, Project};
 use sources::git::Git;
 use std::collections::BTreeSet;
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum DevHintRef {
+    Branch,
+    Tag,
+    Commit,
+}
+
+pub fn dev_hints(
+    project: &Project,
+    name: Option<&str>,
+    reference: Option<DevHintRef>,
+    hint: Option<&str>,
+) -> Result<()> {
+    let mut config: config::Config = config::read_json(&project.root.join(config::CONFIG))?;
+    if let Some(name) = name {
+        ensure!(config.sources.contains_key(name), "unknown source {name}");
+    }
+    if let Some(hint) = hint {
+        ensure!(
+            !hint.trim().is_empty(),
+            "development hint must not be empty"
+        );
+    }
+    for (source_name, source) in &mut config.sources {
+        if name.is_some_and(|name| name != source_name) {
+            continue;
+        }
+        let value = if let Some(hint) = hint {
+            hint.to_owned()
+        } else {
+            let checkout = crate::run::active_checkout(project, source_name)?;
+            let repo = Git::at(&checkout);
+            warn_changes(source_name, &repo)?;
+            (match reference.context("choose --ref or --hint")? {
+                DevHintRef::Branch => repo.branch(),
+                DevHintRef::Tag => repo.exact_tag(),
+                DevHintRef::Commit => repo.head()?.context("checkout has no commit"),
+            })
+            .with_context(|| format!("{source_name}: cannot capture development hint"))?
+        };
+        source.dev_hint = Some(value);
+    }
+    // Load the persisted config above to retain literal upstream paths, which Project normalizes.
+    config::write_json(&project.root.join(config::CONFIG), &config)?;
+    println!("Updated development hints in {}", config::CONFIG);
+    Ok(())
+}
+
 pub fn warn_changes(name: &str, repo: &Git) -> Result<bool> {
     let changes = repo.changes()?;
     for change in &changes {

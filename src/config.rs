@@ -13,6 +13,9 @@ pub const LOCK: &str = ".sources.lock";
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub url: String,
+    /// Advisory Git ref for development setup, independent of release pins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev_hint: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pnpm: BTreeMap<String, PnpmPackage>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

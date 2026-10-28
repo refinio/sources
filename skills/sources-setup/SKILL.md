@@ -18,7 +18,7 @@ Committed `.sources.conf`:
 {
   "version": 1,
   "directory": "./sources",
-  "sources": {"lib": {"url": "https://github.com/example/lib.git"}}
+  "sources": {"lib": {"url": "https://github.com/example/lib.git", "dev_hint": "main"}}
 }
 ```
 
@@ -29,6 +29,10 @@ Ignored `.sources.local.conf`:
 ```
 
 `directory` and relative local paths resolve from the app root. Each local path must identify a Git checkout root with a matching remote; a fork may match through its `upstream` remote. Preserve original checkouts and their edits.
+
+Optional per-source `dev_hint` suggests a Git branch, tag, or commit to consider when preparing a development environment. These are hints and can become outdated. Compare them with the current task, repository state, and project guidance. Tell the user when a hint is likely outdated, explain why, and ignore it or update it to the appropriate ref. Do not force an existing checkout onto a hinted ref or treat a hint as a release pin. `sources dev` only links existing checkouts.
+
+Use `sources dev-hints [name] --ref branch|tag|commit` to capture hints from the selected linked checkouts, or `sources dev-hints [name] --hint <git-ref>` to write a literal hint without a checkout. Omit `name` to update all sources. Branch capture requires an attached branch; tag capture requires one exact tag at HEAD. After merging coordinated PRs across repositories, review and update affected dev hints to suitable refs for the merged work, replacing hints that still point to obsolete PR branches or earlier commits. Review the `.sources.conf` diff and report likely stale hints and any updates to the user.
 
 For Git releases, point workspace/package references at `sources/lib` or a package below it and keep these paths in both modes. For pnpm registry releases, add source `pnpm` mappings such as `"@example/ui": {"path":"packages/ui"}`, keep consumers' ordinary package dependencies, and exclude mapped source packages from workspace membership. Require pnpm 10.15+, root `package.json` and `pnpm-workspace.yaml`; move legacy JSON pnpm overrides to YAML. Sources owns mapped package overrides across the graph. Pin versions in `.sources.lock` with `sources lock --registry @example/ui:1.2.3 --check`; retain Git pins too. Use `sources release --git` for pinned checkouts or `sources release --registry` for published packages. Initial setup and transitions between file and registry references install dependencies. Switching local and pinned Git checkouts preserves existing file references and the pnpm lock. See the [pnpm setup](https://github.com/refinio/sources#pnpm-local-and-published-packages). Never remove ordinary files/directories to make room for links.
 
