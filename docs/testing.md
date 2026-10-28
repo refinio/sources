@@ -12,6 +12,8 @@ The suite deliberately retires exhaustive malformed-input, transport fallback, u
 
 | Story | Scenario |
 | --- | --- |
+| Update an installed CLI through a loopback release installer, recovering from download/installation failures and printing skills guidance only on success | `tests/update.rs`, Unix |
+| Discover global skill installation and read the exact bundled skill files without installing or configuring a project | `tests/skills.rs` |
 | Set up a project repeatedly without overwriting configuration | `tests/setup.rs` |
 | Capture branch, tag or commit development hints, set literal hints, and preserve configuration on capture failure | `tests/dev_hints.rs` |
 | Inspect a development checkout through a fork remote and discover its project | `tests/check.rs` |

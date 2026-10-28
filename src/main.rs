@@ -8,13 +8,16 @@ use std::path::{Path, PathBuf};
 mod commands;
 mod pnpm;
 mod run;
+mod skills;
 mod turbo;
+mod update;
 mod workspace;
 
 #[derive(Parser)]
 #[command(
     version,
-    about = "Select development checkouts and pinned release sources"
+    about = "Select development checkouts and pinned release sources",
+    after_help = skills::HELP
 )]
 struct Cli {
     /// Start project discovery in this directory
@@ -26,6 +29,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Update this CLI to the latest stable GitHub Release
+    Update,
+    /// List bundled agent skills or print a skill's full instructions
+    #[command(after_help = skills::HELP)]
+    Skills { name: Option<String> },
     /// Run parent Turbo with hashes from every configured child package/task
     #[command(disable_help_flag = true)]
     Turbo {
@@ -134,6 +142,17 @@ fn project_lock(root: &Path, wait: bool) -> Result<File> {
 }
 
 fn execute(cli: Cli) -> Result<i32> {
+    match &cli.command {
+        Commands::Update => {
+            update::execute()?;
+            return Ok(0);
+        }
+        Commands::Skills { name } => {
+            skills::execute(name.as_deref())?;
+            return Ok(0);
+        }
+        _ => {}
+    }
     let start = cli.directory.unwrap_or(std::env::current_dir()?);
     let root = match config::discover(&start)? {
         Some(root) => root,
