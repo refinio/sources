@@ -49,6 +49,16 @@ npx skills add refinio/sources
 
 Choose the skills and agents to install to. This command uses Node/npm and does not run automatically during CLI installation.
 
+For global agent access, use `npx skills add refinio/sources --global`. If an agent cannot install skills, it can read the same bundled instructions directly from the CLI:
+
+```sh
+sources skills
+sources skills sources-setup
+sources skills sources-release
+```
+
+The overview lists each skill's purpose. A named command prints the complete `SKILL.md` shipped with that CLI version, including its metadata. These commands work offline, need no project configuration, and do not install or change files. `sources --help` points agents to both options. Run `npx skills update` separately to refresh installed skills.
+
 - [sources-setup](skills/sources-setup/SKILL.md) applies to external local dependency or symlink requests and existing loose checkout references. It asks before adopting Sources, then guides setup and daily development.
 - [sources-release](skills/sources-release/SKILL.md) covers capturing or updating fixed pins, release/reproduction workflows, and returning to development.
 
@@ -224,6 +234,7 @@ The outer lock is released before parent Turbo starts so nested task calls work.
 | Command | Behavior |
 | --- | --- |
 | `update` | Install the latest stable CLI release on Linux/macOS and print the skills update command. |
+| `skills [name]` | List bundled agent skills or print the complete named skill without installation. |
 | `turbo [args ...]` | Run parent Turbo with all configured child task hash variables. |
 | `task package:task...` | Run allowed exact child Turbo tasks in active checkouts. |
 | `setup` | Create missing configuration, directories, and ignore entries. |
