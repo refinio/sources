@@ -67,6 +67,11 @@ try:
                                           SOURCES_INSTALL_DIR=str(root / "wrong-app-prefix"),
                                           CARGO_DIST_FORCE_INSTALL_DIR=str(root / "wrong-generic-prefix"),
                                           SOURCES_UNMANAGED_INSTALL=str(root / "wrong-unmanaged-prefix"))
+                        failed_env = dict(update_env, SOURCES_DOWNLOAD_URL=base + "/missing")
+                        failed_update = subprocess.run([binary, "update"], cwd=root, env=failed_env,
+                                                       capture_output=True, text=True, timeout=90)
+                        if failed_update.returncode == 0 or "ERROR" not in failed_update.stderr or "npx skills update" in failed_update.stdout:
+                            raise SystemExit(f"Self-update lost installer failure diagnostics:\n{failed_update.stdout}\n{failed_update.stderr}")
                         before_update = len(requests)
                         updated = subprocess.run([binary, "update"], cwd=root, env=update_env,
                                                  capture_output=True, text=True, timeout=90)

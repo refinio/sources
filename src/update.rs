@@ -3,7 +3,7 @@ use anyhow::Result;
 #[cfg(unix)]
 pub fn execute() -> Result<()> {
     use anyhow::{Context, ensure};
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     let executable = std::env::current_exe().context("cannot locate the running Sources binary")?;
     let directory = executable
@@ -39,20 +39,24 @@ pub fn execute() -> Result<()> {
         "update installer download failed ({status}); retry sources update"
     );
 
-    let status = Command::new("sh")
+    let output = Command::new("sh")
         .arg(&installer)
         .env_remove("SOURCES_INSTALL_DIR")
         .env_remove("CARGO_DIST_FORCE_INSTALL_DIR")
         .env("CARGO_HOME", temp.path().join("cargo-home"))
         .env("SOURCES_UNMANAGED_INSTALL", directory)
         .env("SOURCES_NO_MODIFY_PATH", "1")
-        .env("SOURCES_PRINT_QUIET", "1")
-        .status()
+        .env("SOURCES_PRINT_QUIET", "0")
+        .stdin(Stdio::null())
+        .output()
         .context("cannot start the update installer; sources update requires sh")?;
     ensure!(
-        status.success(),
-        "Sources update failed ({status}); check write permissions for {} and retry sources update",
-        directory.display()
+        output.status.success(),
+        "Sources update failed ({}) in {}:\n{}{}\nfix the installer error and retry sources update",
+        output.status,
+        directory.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
     println!("Sources updated. To update installed agent skills, run: npx skills update");
     Ok(())

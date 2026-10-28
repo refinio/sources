@@ -53,8 +53,19 @@ fn update_replaces_the_running_binary_and_suggests_skills_only_after_success() {
     let installed = bin.join("sources");
     std::fs::copy(assert_cmd::cargo::cargo_bin!("sources"), &installed).unwrap();
     let original = std::fs::read(&installed).unwrap();
-    let update = || {
-        let mut command = f.command(&installed);
+    let update = |terminal: bool| {
+        let mut command = if terminal {
+            let mut command = f.command("python3");
+            command
+                .args([
+                    "-c",
+                    "import os, pty, subprocess, sys\nmaster, slave = pty.openpty()\ntry:\n result = subprocess.run(sys.argv[1:], stdin=slave, timeout=15)\nfinally:\n os.close(slave)\n os.close(master)\nsys.exit(result.returncode)",
+                ])
+                .arg(&installed);
+            command
+        } else {
+            f.command(&installed)
+        };
         command
             .current_dir(&f.app)
             .arg("update")
@@ -66,21 +77,28 @@ fn update_replaces_the_running_binary_and_suggests_skills_only_after_success() {
         command
     };
 
-    let failed = update().output().unwrap();
-    assert_eq!(failed.status.code(), Some(1), "{failed:?}");
-    assert!(!String::from_utf8_lossy(&failed.stdout).contains("npx skills update"));
-    assert_eq!(std::fs::read(&installed).unwrap(), original);
-
-    std::fs::write(f.root.join("installer.sh"), "#!/bin/sh\nexit 23\n").unwrap();
-    let failed = update().output().unwrap();
+    let failed = update(false).output().unwrap();
     assert_eq!(failed.status.code(), Some(1), "{failed:?}");
     assert!(!String::from_utf8_lossy(&failed.stdout).contains("npx skills update"));
     assert_eq!(std::fs::read(&installed).unwrap(), original);
 
     std::fs::write(
         f.root.join("installer.sh"),
+        "#!/bin/sh\nif [ \"$SOURCES_PRINT_QUIET\" = 0 ]; then echo 'installer prerequisite missing: tar' >&2; fi\nexit 23\n",
+    )
+    .unwrap();
+    let failed = update(false).output().unwrap();
+    assert_eq!(failed.status.code(), Some(1), "{failed:?}");
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("installer prerequisite missing: tar")
+    );
+    assert!(!String::from_utf8_lossy(&failed.stdout).contains("npx skills update"));
+    assert_eq!(std::fs::read(&installed).unwrap(), original);
+
+    std::fs::write(
+        f.root.join("installer.sh"),
         format!(
-            "#!/bin/sh\nset -eu\ncurl -fsSL '{}/sources' -o \"$SOURCES_UNMANAGED_INSTALL/sources.new\"\nchmod +x \"$SOURCES_UNMANAGED_INSTALL/sources.new\"\nmv -f \"$SOURCES_UNMANAGED_INSTALL/sources.new\" \"$SOURCES_UNMANAGED_INSTALL/sources\"\n",
+            "#!/bin/sh\nset -eu\nif [ -t 0 ]; then echo 'installer would prompt' >&2; exit 24; fi\ncurl -fsSL '{}/sources' -o \"$SOURCES_UNMANAGED_INSTALL/sources.new\"\nchmod +x \"$SOURCES_UNMANAGED_INSTALL/sources.new\"\nmv -f \"$SOURCES_UNMANAGED_INSTALL/sources.new\" \"$SOURCES_UNMANAGED_INSTALL/sources\"\n",
             server.url
         ),
     )
@@ -90,7 +108,7 @@ fn update_replaces_the_running_binary_and_suggests_skills_only_after_success() {
         "#!/bin/sh\nprintf 'sources 99.0.0\\n'\n",
     )
     .unwrap();
-    let output = success(update().output().unwrap());
+    let output = success(update(true).output().unwrap());
     assert!(String::from_utf8_lossy(&output.stdout).contains("npx skills update"));
     let version = success(f.command(&installed).arg("--version").output().unwrap());
     assert_eq!(String::from_utf8_lossy(&version.stdout), "sources 99.0.0\n");
