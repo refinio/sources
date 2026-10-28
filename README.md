@@ -58,13 +58,27 @@ Setup creates missing configuration and ignore entries without downloading repos
   "directory": "./sources",
   "sources": {
     "library": {
-      "url": "https://github.com/your-org/library.git"
+      "url": "https://github.com/your-org/library.git",
+      "dev_hint": "main"
     }
   }
 }
 ```
 
 Replace the example URL. Each source name is one directory name. For example, `library` appears at `sources/library`. Point your Cargo, pnpm, or other workspace configuration at these stable paths.
+
+Optional `dev_hint` suggests a Git branch, tag, or commit for development setup. Hints can become outdated; ignore or update them when they no longer fit the work, and tell the user when a hint appears stale. Review and update affected hints after merging coordinated PRs across repositories. Hints do not change checkouts or release pins.
+
+Capture hints from the currently linked checkouts, or supply a literal Git ref:
+
+```sh
+sources dev-hints --ref branch                  # Update all sources
+sources dev-hints library --ref tag             # Require one exact tag at HEAD
+sources dev-hints library --ref commit          # Record the full commit ID
+sources dev-hints library --hint next/develop   # Set a hint without a checkout
+```
+
+Omit the source name to update all configured sources. Choose exactly one of `--ref branch|tag|commit` and `--hint <git-ref>`. Capture validates all selected links before one atomic configuration write. A detached HEAD cannot supply a branch hint; missing or multiple tags require a manual hint or another ref kind. Manual hints are stored without resolving them. Local mappings and `.sources.lock` remain unchanged.
 
 Edit the ignored `.sources.local.conf` to map source names to development checkouts:
 
@@ -218,6 +232,7 @@ The outer lock is released before parent Turbo starts so nested task calls work.
 | `setup` | Create missing configuration, directories, and ignore entries. |
 | `check` | Validate all development mappings and repository identities locally. |
 | `dev` | Select validated development checkouts; install configured pnpm file dependencies. |
+| `dev-hints [name] --ref branch\|tag\|commit` / `--hint <git-ref>` | Update advisory development refs in `.sources.conf` for one or all sources. |
 | `lock [--git] [name:commit or name:tag=tag ...] [--check]` | Capture development HEADs or update selected commit/tag pins atomically. `--check` caches inputs and selects named tags from upstream. |
 | `lock --registry package:version... [--check]` | Pin exact package versions; `--check` downloads releases before writing. |
 | `fetch [name ...]` | Contact selected upstreams and cache locked revisions, or default-branch tips for unpinned sources. Preserve existing checkout HEADs and links. |

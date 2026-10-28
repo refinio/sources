@@ -53,6 +53,18 @@ enum Commands {
     CheckRelease,
     /// Select development checkouts and install configured pnpm file dependencies
     Dev,
+    /// Save advisory development refs in .sources.conf
+    #[command(group(clap::ArgGroup::new("hint_input").required(true).args(["reference", "hint"])))]
+    DevHints {
+        /// Source to update; omit to update all configured sources
+        name: Option<String>,
+        /// Capture the branch, exact tag, or full commit of the linked checkout
+        #[arg(long = "ref", value_enum)]
+        reference: Option<commands::DevHintRef>,
+        /// Store a literal Git ref without resolving it or requiring a checkout
+        #[arg(long)]
+        hint: Option<String>,
+    },
     /// Inspect actual workspace links, commits, and source changes locally
     Status {
         #[arg(long)]
@@ -180,6 +192,13 @@ fn execute(cli: Cli) -> Result<i32> {
                     }
                 }
                 Commands::Dev => workspace::dev(&project)?,
+                Commands::DevHints {
+                    name,
+                    reference,
+                    hint,
+                } => {
+                    commands::dev_hints(&project, name.as_deref(), reference, hint.as_deref())?;
+                }
                 Commands::Status { json } => return workspace::status(&project, json),
                 Commands::Release {
                     clean,

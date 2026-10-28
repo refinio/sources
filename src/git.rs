@@ -155,6 +155,28 @@ impl Git {
         )
     }
 
+    pub fn branch(&self) -> Result<String> {
+        let reference = self.text(&["symbolic-ref", "HEAD"]).context(
+            "cannot capture branch from detached HEAD; use --ref commit or switch to a branch",
+        )?;
+        reference
+            .strip_prefix("refs/heads/")
+            .map(str::to_owned)
+            .context("HEAD does not identify a local branch")
+    }
+
+    pub fn exact_tag(&self) -> Result<String> {
+        let tags = self.text(&["tag", "--points-at", "HEAD"])?;
+        let mut tags = tags.lines();
+        let tag = tags
+            .next()
+            .context("HEAD has no exact tag; use --ref commit or --hint <git-ref>")?;
+        if tags.next().is_some() {
+            bail!("HEAD has multiple tags; choose one with --hint <git-ref>");
+        }
+        Ok(tag.to_owned())
+    }
+
     pub fn head(&self) -> Result<Option<String>> {
         let output = self.output(&["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?;
         if output.status.success() {

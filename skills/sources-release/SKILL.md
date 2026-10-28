@@ -9,6 +9,8 @@ Require Git, an installed `sources` CLI, and a configured `.sources.conf`; see t
 
 Work from the app root or use `sources -C <app-root> ...`. Establish whether the user wants new pins or reproduction of existing pins. Release activation never changes Git pins or locked package versions. Opt-in pnpm switching changes effective overrides and may update its dependency lock.
 
+Per-source `dev_hint` values in `.sources.conf` are advisory Git refs for development setup and can become outdated. Tell the user when a hint is likely stale, explain the evidence, and ignore or update it as appropriate. After merging coordinated PRs across repositories, review and update the affected dev hints to suitable refs for the merged work. Use `sources dev-hints [name] --ref branch|tag|commit` to capture from linked checkouts, or `sources dev-hints [name] --hint <git-ref>` for a literal ref. Omit `name` to update all sources. Review the `.sources.conf` diff and report updates. Hints are separate from release pins; never repin or switch an existing development checkout merely to follow a hint.
+
 To capture a newly tested development combination, first commit and make source changes available upstream within the user's authorized scope. Dirty development edits are excluded from pins.
 
 ```sh

@@ -66,7 +66,8 @@ Committed repository configuration:
   "directory": "./sources",
   "sources": {
     "one.experimental": {
-      "url": "https://github.com/refinio/one-experimental.git"
+      "url": "https://github.com/refinio/one-experimental.git",
+      "dev_hint": "main"
     },
     "one": {
       "url": "<upstream repository URL>"
@@ -80,6 +81,8 @@ Committed repository configuration:
 Source names must be valid single directory names. Reject path separators, `.` and `..`, and names that collide on the current filesystem. Source directories cannot overlap the internal `.sources` directory or overwrite configuration files.
 
 `url` identifies the expected upstream repository and the remote used for managed clones. Configuration does not pin a moving branch as a release input; `.sources.lock` pins the exact commit.
+
+Optional per-source `dev_hint` is a string containing a suggested Git ref, such as a branch, tag, or full commit ID, for development setup. It is advisory metadata and may be outdated. Setup agents must tell the user when a hint appears stale and ignore or update it based on the current work. Review and update affected hints after merging coordinated PRs across repositories. Hints never change checkout selection, validation of development HEADs, fetch targets, or release pins. Omitted hints remain omitted when configuration is serialized.
 
 ### `.sources.local.conf`
 
@@ -222,6 +225,7 @@ Ordinary checkout may encounter ignored or untracked files that would be overwri
 | `sources setup` | None. |
 | `sources check` | None. |
 | `sources dev` | No Git fetch; opt-in pnpm installation may use the registry. |
+| `sources dev-hints` | None. |
 | `sources status` | None. |
 | `sources run` | None by the tool; the child command may use the network. |
 | `sources turbo` / `sources task` | No fetch, installation, or tool download; invoked Turbo tasks may use the network. |
@@ -283,6 +287,16 @@ Do not move existing managed worktree HEADs, including submodule HEADs, or chang
 Perform development validation for every source before changing any link. Point stable workspace paths to configured development checkouts. Warn about dirty development sources and any relevant existing managed reference checkout.
 
 Do not change source branches, fetch, update pins, or modify checkout contents. Repeating the command when links are already correct is harmless.
+
+### `sources dev-hints [name] --ref <branch|tag|commit> | --hint <git-ref>`
+
+Update `dev_hint` in committed `.sources.conf` for the named source, or every configured source when no name is given. Require exactly one of `--ref` and `--hint`. Unknown source names fail.
+
+`--ref branch` captures the current local branch name from each selected active workspace link. Detached HEAD fails with guidance to use a commit or switch to a branch. `--ref tag` requires exactly one lightweight or annotated tag pointing at HEAD; missing or multiple exact tags fail with guidance to choose a manual hint or a different ref kind. `--ref commit` captures the full HEAD commit ID, including detached checkouts. Use the same link-target and repository identity checks as `sources run`, inspecting only selected checkouts. Missing, broken, unexpected, registry-selected or invalid checkouts fail. Warn about source edits without including them in hints.
+
+`--hint <git-ref>` stores a nonempty literal hint without resolving it or requiring linked checkouts. This permits hints for branches and tags unavailable locally. Values are data, never shell expressions.
+
+Read every selected ref successfully before one atomic configuration write. Failure leaves `.sources.conf` unchanged. Preserve unrelated configuration values, including literal upstream paths, optional pnpm mappings and Turbo allowlists. The command holds the project lock and never fetches, changes checkouts or links, installs dependencies, edits local mappings, or changes `.sources.lock`. It does not determine whether hints are stale.
 
 ### `sources release [--git | --registry]`
 
