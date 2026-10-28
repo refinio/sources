@@ -91,8 +91,14 @@ fn capture_dev_hints_from_linked_checkouts_and_preserve_config_on_failure() {
         local
     );
     assert_eq!(std::fs::read(f.app.join(".sources.lock")).unwrap(), lock);
-    assert_eq!(std::fs::canonicalize(f.app.join("sources/a")).unwrap(), a);
-    assert_eq!(std::fs::canonicalize(f.app.join("sources/b")).unwrap(), b);
+    assert_eq!(
+        std::fs::canonicalize(f.app.join("sources/a")).unwrap(),
+        std::fs::canonicalize(&a).unwrap()
+    );
+    assert_eq!(
+        std::fs::canonicalize(f.app.join("sources/b")).unwrap(),
+        std::fs::canonicalize(&b).unwrap()
+    );
 
     // Literal hints also work before checkouts have been linked locally.
     std::fs::rename(f.app.join("sources"), f.app.join("saved-links")).unwrap();
