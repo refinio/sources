@@ -61,6 +61,25 @@ try:
                     installed = subprocess.check_output([binary, "--version"], text=True, timeout=10).strip()
                     if installed != f"sources {version}":
                         raise SystemExit(f"Unexpected installed binary version: {installed}")
+                    if not windows and override == "SOURCES_DOWNLOAD_URL":
+                        update_env = dict(env, SOURCES_UPDATE_URL=f"{base}/{script.name}",
+                                          CARGO_HOME=str(prefix),
+                                          SOURCES_INSTALL_DIR=str(root / "wrong-app-prefix"),
+                                          CARGO_DIST_FORCE_INSTALL_DIR=str(root / "wrong-generic-prefix"),
+                                          SOURCES_UNMANAGED_INSTALL=str(root / "wrong-unmanaged-prefix"))
+                        before_update = len(requests)
+                        updated = subprocess.run([binary, "update"], cwd=root, env=update_env,
+                                                 capture_output=True, text=True, timeout=90)
+                        if updated.returncode != 0 or "npx skills update" not in updated.stdout:
+                            raise SystemExit(f"Self-update failed ({updated.returncode}):\n{updated.stdout}\n{updated.stderr}")
+                        if f"/{script.name}" not in requests[before_update:] or f"/{archive}" not in requests[before_update:]:
+                            raise SystemExit(f"Self-update did not download the installer and native archive: {requests[before_update:]}")
+                        if any(root.glob("wrong-*-prefix")) or (prefix / "bin").exists():
+                            raise SystemExit("Self-update used an inherited prefix instead of the running binary's directory")
+                        updated_version = subprocess.check_output([binary, "--version"], text=True, timeout=10).strip()
+                        if updated_version != f"sources {version}":
+                            raise SystemExit(f"Unexpected updated binary version: {updated_version}")
+                        print(f"{target}: self-update through the generated installer passed", flush=True)
                 elif result.returncode == 0 or instruction in output or binary.exists():
                     raise SystemExit(f"{override} failed download reported success ({result.returncode}):\n{output}")
                 print(f"{target}: {override} {'success' if success else 'download failure'} passed", flush=True)

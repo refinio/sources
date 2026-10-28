@@ -29,6 +29,16 @@ sources --version
 
 The repository pins Rust in `rust-toolchain.toml`. Rustup selects it automatically.
 
+To update an installed CLI on Linux or macOS:
+
+```sh
+sources update
+```
+
+This installs the latest stable GitHub Release into the running binary's directory using the release's shell installer. It requires `curl`, `sh`, and write access to that directory, and works outside a configured project. After success it prints `npx skills update` to refresh installed agent skills separately. On Windows, close Sources and rerun the PowerShell installation command above.
+
+`SOURCES_UPDATE_URL` can select an alternative trusted shell installer URL, such as a mirror. This executes the downloaded script. The default is the official latest stable release; the installer's existing download overrides still apply to its archives.
+
 ## Agent skills
 
 After a successful binary installation, the installer prints this optional next step:
@@ -213,6 +223,7 @@ The outer lock is released before parent Turbo starts so nested task calls work.
 
 | Command | Behavior |
 | --- | --- |
+| `update` | Install the latest stable CLI release on Linux/macOS and print the skills update command. |
 | `turbo [args ...]` | Run parent Turbo with all configured child task hash variables. |
 | `task package:task...` | Run allowed exact child Turbo tasks in active checkouts. |
 | `setup` | Create missing configuration, directories, and ignore entries. |

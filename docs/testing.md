@@ -12,6 +12,7 @@ The suite deliberately retires exhaustive malformed-input, transport fallback, u
 
 | Story | Scenario |
 | --- | --- |
+| Update an installed CLI through a loopback release installer, recovering from download/installation failures and printing skills guidance only on success | `tests/update.rs`, Unix |
 | Set up a project repeatedly without overwriting configuration | `tests/setup.rs` |
 | Inspect a development checkout through a fork remote and discover its project | `tests/check.rs` |
 | Capture development heads, switch to pinned Git inputs, and return to development | `tests/release.rs` |

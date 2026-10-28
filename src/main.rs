@@ -9,6 +9,7 @@ mod commands;
 mod pnpm;
 mod run;
 mod turbo;
+mod update;
 mod workspace;
 
 #[derive(Parser)]
@@ -26,6 +27,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Update this CLI to the latest stable GitHub Release
+    Update,
     /// Run parent Turbo with hashes from every configured child package/task
     #[command(disable_help_flag = true)]
     Turbo {
@@ -122,6 +125,10 @@ fn project_lock(root: &Path, wait: bool) -> Result<File> {
 }
 
 fn execute(cli: Cli) -> Result<i32> {
+    if matches!(cli.command, Commands::Update) {
+        update::execute()?;
+        return Ok(0);
+    }
     let start = cli.directory.unwrap_or(std::env::current_dir()?);
     let root = match config::discover(&start)? {
         Some(root) => root,
