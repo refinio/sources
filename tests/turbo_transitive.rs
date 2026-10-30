@@ -333,6 +333,34 @@ fn genuine_task_hash_cycle_reports_the_task_path_before_any_execution() {
 #[test]
 fn content_edges_prepare_transitively_and_keep_child_owned_wildcard_env() {
     let t = Chain::new();
+    // Content may be declared only in the child. A later invalid direct selector
+    // must still prevent all preparation, including that child's upstream task.
+    edit_json(&t.middle.join(".sources.conf"), |config| {
+        config["sources"]["leaf"]["packages"]["leaf"]["content"] = json!({
+            "build":{"artifacts":[{"path":"packages/pkg/dist/result.json"}]}
+        });
+    });
+    edit_json(&t.middle.join("turbo.json"), |config| {
+        config["tasks"]["build"]["env"] = json!(["SOURCES_LEAF__BUILD__CONTENT"]);
+        config["tasks"]["missing"] = json!({});
+    });
+    connect(&t.f, &t.app, &t.middle, "middle", &["build", "missing"]);
+    common::failure(
+        t.f.cli()
+            .current_dir(&t.app)
+            .env("CI", "true")
+            .args(["task", "middle:build", "middle:missing"])
+            .output()
+            .unwrap(),
+        "has no executable package script",
+    );
+    for root in [&t.leaf, &t.middle, &t.app] {
+        assert!(
+            !root.join("executions.log").exists(),
+            "must validate all selected tasks before upstream preparation"
+        );
+    }
+    connect(&t.f, &t.app, &t.middle, "middle", &["build"]);
     for (root, dep) in [(&t.middle, "leaf"), (&t.app, "middle")] {
         edit_json(&root.join(".sources.conf"), |config| {
             config["sources"][dep]["packages"][dep]["content"] = json!({

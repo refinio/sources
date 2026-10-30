@@ -246,6 +246,26 @@ impl Resolver {
         })
     }
 
+    // Plain repositories cannot consume managed source env. Their validation
+    // query is already the final hash snapshot, so keep it for later resolution.
+    fn remember_plain(
+        &mut self,
+        source: &SourceTasks,
+        hashes: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        let checkout = std::fs::canonicalize(&source.checkout)?;
+        for (id, arg) in source.ids.iter().zip(&source.args) {
+            let mut selected = source.clone();
+            selected.ids = vec![id.clone()];
+            selected.args = vec![arg.clone()];
+            self.resolved.insert(
+                (checkout.clone(), id.clone()),
+                (selected, hashes[id].clone()),
+            );
+        }
+        Ok(())
+    }
+
     fn resolve(&mut self, source: &mut SourceTasks) -> Result<BTreeMap<String, String>> {
         let checkout = std::fs::canonicalize(&source.checkout)?;
         ensure!(
@@ -262,15 +282,7 @@ impl Resolver {
                 .retain(|id| !self.resolved.contains_key(&(checkout.clone(), id.clone())));
             if !pending.ids.is_empty() {
                 let (hashes, _) = query(&mut pending)?;
-                for (id, arg) in pending.ids.iter().zip(&pending.args) {
-                    let mut selected = pending.clone();
-                    selected.ids = vec![id.clone()];
-                    selected.args = vec![arg.clone()];
-                    self.resolved.insert(
-                        (checkout.clone(), id.clone()),
-                        (selected, hashes[id].clone()),
-                    );
-                }
+                self.remember_plain(&pending, &hashes)?;
             }
         }
         let mut hashes = BTreeMap::new();
@@ -406,22 +418,17 @@ fn configured_selectors(project: &Project) -> Result<BTreeMap<String, String>> {
 
 pub(crate) fn task(project: &Project, selectors: &[String]) -> Result<i32> {
     let mut groups = prepare(project, selectors)?;
-    // Validate every source's selected tasks before any task is allowed to run.
-    let uses_content = project
-        .config
-        .sources
-        .values()
-        .flat_map(|source| source.packages.values())
-        .any(|entry| !entry.content.is_empty());
+    // Validation cannot depend on content appearing in the caller's config:
+    // any selected child can consume content declared only in its own project.
+    let mut resolver = Resolver::new(project)?;
     for source in &mut groups {
-        // Direct task calls keep their execution contract. Content preparation is
-        // for the task's consumed dependencies, not another run of the task itself.
+        // Direct calls execute their own tasks once, after all validation.
         source.content.clear();
-        if uses_content {
-            query(source)?;
+        let (hashes, _) = query(source)?;
+        if !source.checkout.join(sources::config::CONFIG).is_file() {
+            resolver.remember_plain(source, &hashes)?;
         }
     }
-    let mut resolver = Resolver::new(project)?;
     for source in &mut groups {
         resolver.resolve(source)?;
     }

@@ -346,8 +346,10 @@ consumer Turbo 2.8.0 both prepare before the downstream invocation. Sources does
 not claim to accelerate real consumers based on the disposable fixture results.
 
 `sources task` retains its direct execution contract, including exact pair
-validation before execution and its caller lock. Its selected task's own content
-outputs are not prepared a second time. If that task consumes configured content
+validation before execution and its caller lock. It prevalidates every direct selected executable task before recursive resolution
+can execute any content prerequisite, even when content is declared only in a child.
+Plain repository validation snapshots are reused without another native hash query.
+Its selected task's own content outputs are not prepared a second time. If that task consumes configured content
 edges, their upstream preparation and this checkout's frozen refresh/verification
 occur before querying and executing the selected task. Existing explicit native
 Turbo prerequisites and staging scripts still run. Redundant legacy `sources task`
