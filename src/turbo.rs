@@ -395,10 +395,12 @@ impl Resolver {
             let (hashes, _) = query(&mut snapshot)?;
             for (id, arg) in snapshot.ids.iter().zip(&snapshot.args) {
                 let key = (checkout.clone(), id.clone());
-                if self.executed.contains(&key) {
+                // Earlier consumers can embed a hash without executing its task.
+                // A later group's install must never replace that snapshot.
+                if let Some((_, previous_hash)) = self.resolved.get(&key) {
                     ensure!(
-                        self.resolved[&key].1 == hashes[id],
-                        "prepared task {id} inputs changed during grouped refresh; stage nonoverlapping inputs before retrying"
+                        previous_hash == &hashes[id],
+                        "resolved task {id} inputs changed during grouped refresh; stage nonoverlapping inputs before retrying"
                     );
                 }
                 let mut selected = ready.remove(id).expect("discovered selected task");

@@ -585,4 +585,46 @@ fs.appendFileSync('../../group-executions.log', task+'\n');
         executions.lines().filter(|line| *line == "other").count(),
         1
     );
+
+    // A previously exported hash is immutable even if its task has not executed.
+    // First -> middle:build resolves it before a later direct middle task group.
+    // The combined lifecycle then changes a materialized native input of build.
+    let generator = std::fs::read_to_string(t.middle.join("generate.cjs"))
+        .unwrap()
+        .replace(
+            "JSON.stringify({value})",
+            "JSON.stringify({value, otherPresent:!!process.env.SOURCES_LEAF__OTHER__CONTENT})",
+        );
+    std::fs::write(t.middle.join("generate.cjs"), generator).unwrap();
+    let first = repository(&t.f, "first", Some("middle"));
+    connect(&t.f, &first, &t.middle, "middle", &["build"]);
+    write_json(
+        &t.app.join(".sources.conf"),
+        &json!({"version":1,"directory":"sources","sources":{
+            "a-first":{"url":t.f.git(&first,&["remote","get-url","origin"]),"packages":{"first":{"tasks":["build"]}}},
+            "z-middle":{"url":t.f.git(&t.middle,&["remote","get-url","origin"]),"packages":{"middle":{"tasks":["build","other"]}}}
+        }}),
+    );
+    write_json(
+        &t.app.join(".sources.local.conf"),
+        &json!({"sources":{"a-first":first,"z-middle":t.middle}}),
+    );
+    success(t.f.cli().current_dir(&t.app).arg("dev").output().unwrap());
+    edit_json(&t.app.join("turbo.json"), |config| {
+        config["tasks"]["build"] = json!({"env":["SOURCES_FIRST__BUILD"]});
+    });
+    edit_json(&t.app.join("packages/pkg/package.json"), |manifest| {
+        manifest["scripts"]["build"] =
+            json!("node -e \"require('node:fs').writeFileSync('../../parent-started','unsafe')\"");
+    });
+    common::failure(
+        t.f.cli()
+            .current_dir(&t.app)
+            .env("CI", "true")
+            .args(["turbo", "run", "build"])
+            .output()
+            .unwrap(),
+        "resolved task middle#build inputs changed",
+    );
+    assert!(!t.app.join("parent-started").exists());
 }

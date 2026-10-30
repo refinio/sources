@@ -325,8 +325,9 @@ For `sources turbo`, Sources now performs these steps for configured content tas
    refresh, so a lifecycle generator cannot erase an earlier task's inputs by
    seeing only a later task's partial environment. Memoized tasks retain their own
    consumed edges, preserving task-level cycle handling. If a later stage changes
-   an already prepared task's native inputs, fail and require explicit staging
-   rather than accepting a snapshot for a different task state.
+   a previously resolved task's native inputs, fail even if the task was only
+   queried for its hash. Require explicit staging rather than accepting a snapshot
+   for a different task state.
    This opt-in refresh is independent of the selection-time install skip logic.
 5. Compare installed consumed trees with the prepared upstream trees, including
    relative file names, file bytes and Unix executable bits. Recheck upstream bytes
