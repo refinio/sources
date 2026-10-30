@@ -35,7 +35,7 @@ enum Commands {
     /// List bundled agent skills or print a skill's full instructions
     #[command(after_help = skills::HELP)]
     Skills { name: Option<String> },
-    /// Run parent Turbo with hashes from every configured child package/task
+    /// Run parent Turbo with inputs from its required foreign task closures
     #[command(disable_help_flag = true)]
     Turbo {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -189,12 +189,15 @@ fn execute(cli: Cli) -> Result<i32> {
             project.validate()?;
             match command {
                 Commands::Run { name, command } => return run::execute(&project, &name, &command),
-                Commands::Task { selectors } => return turbo::task(&project, &selectors),
-                Commands::Turbo { arguments } => {
-                    let mut command = turbo::prepare_parent(&project, &arguments)?;
-                    // Parent Turbo may invoke concurrent `sources task` prerequisites.
-                    // Only the metadata snapshot is protected by this outer lock.
+                Commands::Task { selectors } => {
                     drop(lock);
+                    return turbo::task(&project, &selectors);
+                }
+                Commands::Turbo { arguments } => {
+                    // Each metadata/refresh phase locks its owner. Native tasks
+                    // execute unlocked so foreign closures can return to this owner.
+                    drop(lock);
+                    let mut command = turbo::prepare_parent(&project, &arguments)?;
                     return run::wait_command(&mut command, "parent Turbo").map(run::exit_code);
                 }
                 Commands::Fetch { names } => commands::fetch(&project, &names)?,

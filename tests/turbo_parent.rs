@@ -10,7 +10,6 @@ use turbo_fixture::{TurboFixture, write_json};
 
 mod nested {
     use super::*;
-    use common::failure;
     use std::io::{BufRead, BufReader, Write};
     use std::net::{TcpListener, TcpStream};
     use std::os::fd::AsRawFd;
@@ -63,7 +62,7 @@ mod nested {
     }
 
     #[test]
-    fn parent_turbo_releases_its_lock_and_serializes_concurrent_nested_tasks() {
+    fn parent_turbo_uses_phase_locks_and_allows_concurrent_independent_tasks() {
         let t = TurboFixture::new();
         t.parent();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -146,61 +145,46 @@ socket.on('end', () => { clearTimeout(deadline); process.exit(0); });
             let (message, stream) = event(&listener);
             assert_eq!(message["kind"], "ready", "{message}");
             assert!(
-                message["sourceCount"].as_u64().unwrap() > 0,
-                "nested task must inherit the parent snapshot"
+                message["sourceCount"].as_u64().unwrap() == 0,
+                "passthrough variables alone must not make the allowlist required"
             );
             ready.push(stream);
         }
         for mut stream in ready {
             stream.write_all(b"go\n").unwrap();
         }
-        let mut first = None;
-        let mut waiting = false;
-        while first.is_none() || !waiting {
+        let mut children = Vec::new();
+        while children.len() < 2 {
             let (message, stream) = event(&listener);
             match message["kind"].as_str().unwrap() {
                 "child" => {
                     assert_eq!(
                         message["env"],
                         json!({}),
-                        "child execution must clear inherited hash inputs"
+                        "child must clear inherited source inputs"
                     );
-                    assert!(
-                        first.is_none(),
-                        "second child ran while the first held the lock"
-                    );
-                    first = Some(stream);
+                    children.push(stream);
                 }
-                "waiting" => waiting = true,
-                "exit" => panic!("nested command exited before the lock handoff: {message}"),
-                _ => panic!("unexpected nested event {message}"),
+                "waiting" => {} // Metadata/refresh phases can serialize briefly.
+                _ => panic!("unexpected event before independent children run: {message}"),
             }
         }
-        failure(
-            t.cli().args(["status", "--json"]).output().unwrap(),
-            "locked",
-        );
-        first.take().unwrap().write_all(b"release\n").unwrap();
-        let mut second = None;
+        success(t.cli().args(["status", "--json"]).output().unwrap());
+        for mut stream in children {
+            stream.write_all(b"release\n").unwrap();
+        }
         let mut exits = 0;
-        while second.is_none() || exits < 1 {
-            let (message, stream) = event(&listener);
+        while exits < 2 {
+            let (message, _) = event(&listener);
             match message["kind"].as_str().unwrap() {
-                "child" => {
-                    assert_eq!(message["env"], json!({}));
-                    second = Some(stream);
-                }
                 "exit" => {
                     assert_eq!(message["code"], 0, "{message}");
                     exits += 1;
                 }
+                "waiting" => {}
                 _ => panic!("unexpected nested event {message}"),
             }
         }
-        second.take().unwrap().write_all(b"release\n").unwrap();
-        let (message, _) = event(&listener);
-        assert_eq!(message["kind"], "exit");
-        assert_eq!(message["code"], 0, "{message}");
         let child = running.0.take().unwrap();
         let pid = child.id();
         let (sender, receiver) = std::sync::mpsc::channel();

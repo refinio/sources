@@ -4,6 +4,7 @@ mod turbo_fixture;
 
 use common::{Fixture, success};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use turbo_fixture::{install_turbo, pnpm, write_json};
@@ -429,14 +430,27 @@ fn content_edges_prepare_transitively_and_keep_child_owned_wildcard_env() {
         before
     );
 
-    // Returning to a different task in the caller's repository is acyclic but
-    // cannot execute that ancestor while this process holds its project lock.
+    // A different task in the caller is a valid producer, not a repository cycle.
     let foundation = t.app.join("packages/foundation");
     std::fs::create_dir_all(&foundation).unwrap();
     write_json(
         &foundation.join("package.json"),
-        &json!({"name":"foundation", "version":"1.0.0", "scripts":{"build":"node -e \"throw Error('must not execute')\""}}),
+        &json!({"name":"foundation","version":"1.0.0","scripts":{"build":"node build.cjs"}}),
     );
+    std::fs::write(
+        foundation.join("build.cjs"),
+        r#"
+const fs = require('node:fs');
+fs.mkdirSync('dist',{recursive:true});
+fs.writeFileSync('dist/result.json',JSON.stringify({value:'foundation\n'}));
+fs.appendFileSync('../../foundation-executions.log','build\n');
+"#,
+    )
+    .unwrap();
+    edit_json(&t.app.join("turbo.json"), |config| {
+        config["tasks"]["foundation#build"] =
+            json!({"env":[],"dependsOn":[],"outputs":["dist/**"]});
+    });
     connect(&t.f, &t.leaf, &t.app, "foundation", &["build"]);
     edit_json(&t.leaf.join(".sources.conf"), |config| {
         config["sources"]["foundation"]["packages"]["foundation"]["content"] =
@@ -445,19 +459,38 @@ fn content_edges_prepare_transitively_and_keep_child_owned_wildcard_env() {
     edit_json(&t.leaf.join("turbo.json"), |config| {
         config["tasks"]["build"]["env"] = json!(["SOURCES_FOUNDATION__BUILD__CONTENT"]);
     });
-    common::failure(
-        t.f.cli()
-            .current_dir(&t.app)
-            .env("CI", "true")
-            .args(["turbo", "run", "build"])
-            .output()
-            .unwrap(),
-        "holding the caller lock",
-    );
-    assert_eq!(
-        [&t.leaf, &t.middle, &t.app].map(|root| t.executions(root)),
-        before
-    );
+    let script = std::fs::read_to_string(t.leaf.join("build.cjs"))
+        .unwrap()
+        .replace(
+            "const input = null;",
+            "const input = '../../sources/foundation/packages/foundation/dist/result.json';",
+        );
+    std::fs::write(t.leaf.join("build.cjs"), script).unwrap();
+    for restore in [false, true] {
+        if restore {
+            for path in [
+                foundation.join("dist"),
+                t.leaf.join("packages/pkg/dist"),
+                t.middle.join("packages/pkg/dist"),
+                t.app.join("packages/pkg/dist"),
+            ] {
+                std::fs::remove_dir_all(path).unwrap();
+            }
+        }
+        success(
+            t.f.cli()
+                .current_dir(&t.app)
+                .env("CI", "true")
+                .args(["turbo", "run", "build", "--filter=top"])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(t.output(&t.app)["value"], "foundation\n");
+        assert_eq!(
+            std::fs::read_to_string(t.app.join("foundation-executions.log")).unwrap(),
+            "build\n"
+        );
+    }
 }
 
 #[test]
@@ -497,6 +530,7 @@ fs.writeFileSync('other/result.json', JSON.stringify({value:fs.readFileSync('oth
     std::fs::write(t.middle.join("generate.cjs"), r#"
 const fs = require('node:fs');
 fs.mkdirSync('generated', {recursive:true});
+fs.writeFileSync('generated/env.json',JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([key])=>key.startsWith('SOURCES_')))));
 for (const [task, directory] of [['build','dist'],['other','other']]) {
   const key = 'SOURCES_LEAF__' + task.toUpperCase() + '__CONTENT';
   const value = process.env[key] ? JSON.parse(fs.readFileSync('node_modules/leaf/'+directory+'/result.json')).value : 'missing';
@@ -586,9 +620,8 @@ fs.appendFileSync('../../group-executions.log', task+'\n');
         1
     );
 
-    // A previously exported hash is immutable even if its task has not executed.
-    // First -> middle:build resolves it before a later direct middle task group.
-    // The combined lifecycle then changes a materialized native input of build.
+    // Discovering all required closures first allows shared tasks to settle in
+    // the same owner frontier, even when first is listed before middle directly.
     let generator = std::fs::read_to_string(t.middle.join("generate.cjs"))
         .unwrap()
         .replace(
@@ -614,17 +647,180 @@ fs.appendFileSync('../../group-executions.log', task+'\n');
         config["tasks"]["build"] = json!({"env":["SOURCES_FIRST__BUILD"]});
     });
     edit_json(&t.app.join("packages/pkg/package.json"), |manifest| {
-        manifest["scripts"]["build"] =
-            json!("node -e \"require('node:fs').writeFileSync('../../parent-started','unsafe')\"");
+        manifest["scripts"]["build"] = json!(
+            "node -e \"require('node:fs').writeFileSync('../../parent-started',process.env.SOURCES_FIRST__BUILD)\""
+        );
     });
-    common::failure(
+    success(
         t.f.cli()
             .current_dir(&t.app)
             .env("CI", "true")
             .args(["turbo", "run", "build"])
             .output()
             .unwrap(),
-        "resolved task middle#build inputs changed",
     );
-    assert!(!t.app.join("parent-started").exists());
+    let env: BTreeMap<String, String> =
+        serde_json::from_slice(&std::fs::read(t.middle.join("generated/env.json")).unwrap())
+            .unwrap();
+    let middle = success(
+        pnpm(&t.f, &t.middle)
+            .envs(env)
+            .args(["exec", "turbo", "run", "middle#build", "--dry=json"])
+            .output()
+            .unwrap(),
+    );
+    let middle: Value = serde_json::from_slice(&middle.stdout).unwrap();
+    let hash = middle["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["taskId"] == "middle#build")
+        .unwrap()["hash"]
+        .as_str()
+        .unwrap();
+    let expected = success(
+        pnpm(&t.f, &first)
+            .env("SOURCES_MIDDLE__BUILD", hash)
+            .args(["exec", "turbo", "run", "first#build", "--dry=json"])
+            .output()
+            .unwrap(),
+    );
+    let expected: Value = serde_json::from_slice(&expected.stdout).unwrap();
+    let hash = expected["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["taskId"] == "first#build")
+        .unwrap()["hash"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(t.app.join("parent-started")).unwrap(),
+        hash
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn filtered_parent_graph_uses_only_required_batched_foreign_closures() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = Chain::new();
+    for root in [&t.middle, &t.leaf] {
+        edit_json(&root.join("packages/pkg/package.json"), |v| {
+            v["scripts"]["other"] = json!("node -e \"throw Error('dry graph must not execute')\"");
+        });
+        edit_json(&root.join("turbo.json"), |v| {
+            v["tasks"]["other"] = json!({"env":["SOURCES_LEAF__OTHER"]});
+        });
+    }
+    connect(
+        &t.f,
+        &t.middle,
+        &t.leaf,
+        "leaf",
+        &["build", "other", "unrelated"],
+    );
+    connect(
+        &t.f,
+        &t.app,
+        &t.middle,
+        "middle",
+        &["build", "other", "unrelated"],
+    );
+    edit_json(&t.app.join(".sources.conf"), |v| {
+        v["sources"]["absent"] = json!({"url":"https://example.invalid/absent.git", "packages":{"missing":{"tasks":["build"]}}});
+    });
+    let unused = t.app.join("packages/unused");
+    std::fs::create_dir_all(&unused).unwrap();
+    write_json(
+        &unused.join("package.json"),
+        &json!({"name":"unused","version":"1.0.0","scripts":{"build":"node -e \"throw Error('unselected')\""}}),
+    );
+    edit_json(&t.app.join("turbo.json"), |v| {
+        v["tasks"]["build"]["env"] = json!(["SOURCES_MIDDLE__BUILD", "SOURCES_MIDDLE__OTHER"]);
+        v["tasks"]["unused#build"] = json!({"env":["SOURCES_MISSING__BUILD"]});
+        v["tasks"]["prepare"]["env"] = json!(["SOURCES_MISSING__BUILD"]);
+    });
+    let trace = t.f.root.join("native-calls.jsonl");
+    for root in [&t.app, &t.middle, &t.leaf] {
+        let bin = root.join("node_modules/.bin/turbo");
+        let native = root.join("node_modules/.bin/turbo-native");
+        std::fs::rename(&bin, &native).unwrap();
+        std::fs::write(
+            &bin,
+            format!(
+                r#"#!/usr/bin/env node
+const fs = require('node:fs'), cp = require('node:child_process');
+fs.appendFileSync({}, JSON.stringify({{cwd:process.cwd(),args:process.argv.slice(2)}})+'\n');
+const p = cp.spawnSync({},process.argv.slice(2),{{stdio:'inherit'}});
+process.exit(p.status ?? 1);
+"#,
+                serde_json::to_string(&trace).unwrap(),
+                serde_json::to_string(&native).unwrap()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let output = success(
+        t.f.cli()
+            .current_dir(&t.app)
+            .env("CI", "true")
+            .args([
+                "turbo",
+                "run",
+                "build",
+                "--filter=top",
+                "--only",
+                "--dry=json",
+            ])
+            .output()
+            .unwrap(),
+    );
+    let metadata: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(metadata["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(metadata["tasks"][0]["taskId"], "top#build");
+    let calls: Vec<Value> = std::fs::read_to_string(&trace)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for (owner, ids) in [
+        (&t.middle, ["middle#build", "middle#other"]),
+        (&t.leaf, ["leaf#build", "leaf#other"]),
+    ] {
+        let queries: Vec<_> = calls
+            .iter()
+            .filter(|call| Path::new(call["cwd"].as_str().unwrap()) == owner)
+            .collect();
+        assert!(
+            queries.len() <= 2,
+            "required tasks must be batched per owner, got {queries:?}"
+        );
+        assert!(
+            queries.iter().any(|call| ids
+                .iter()
+                .all(|id| call["args"].as_array().unwrap().contains(&json!(id)))),
+            "required exact pairs must appear together: {queries:?}"
+        );
+    }
+    assert!(
+        calls
+            .iter()
+            .all(|call| !call["args"].to_string().contains("unrelated")),
+        "{calls:?}"
+    );
+    // Removing --only makes the native prerequisite's external input required.
+    common::failure(
+        t.f.cli()
+            .current_dir(&t.app)
+            .env("CI", "true")
+            .args(["turbo", "run", "build", "--filter=top", "--dry=json"])
+            .output()
+            .unwrap(),
+        "absent",
+    );
+    for root in [&t.app, &t.middle, &t.leaf] {
+        assert!(!root.join("executions.log").exists());
+    }
 }

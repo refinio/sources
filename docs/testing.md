@@ -29,13 +29,14 @@ The suite deliberately retires exhaustive malformed-input, transport fallback, u
 | Run a child in the selected checkout with literal arguments, inherited I/O and its exit status | `tests/run.rs` |
 | Terminate a child process tree while retaining the project lock through shutdown | `tests/run.rs` |
 | Execute exact allowed package/task pairs and their Turbo prerequisites | `tests/turbo.rs` |
-| Run concurrent nested prerequisites from parent Turbo and serialize child execution | `tests/turbo_parent.rs` |
+| Use short metadata/refresh locks and allow concurrent independent native tasks | `tests/turbo_parent.rs` |
 | Propagate a leaf change through direct repository edges, hit cache unchanged and restore deleted outputs | `tests/turbo_transitive.rs` |
 | Resolve only consumed task hashes and preserve cache across unrelated task changes | `tests/turbo_transitive.rs` |
 | Build and restore a repository cycle with an acyclic foundation task graph | `tests/turbo_transitive.rs` |
 | Reject a genuine task-hash cycle before execution with an actionable task path | `tests/turbo_transitive.rs` |
 | Prepare content artifacts, refresh native file installations, preserve cache on identical bytes, reject stale/missing payloads and use pinned checkouts | `tests/turbo_content.rs` |
-| Prepare transitive content edges with child-owned wildcard env and reject cycles/ancestor lock reentry | `tests/turbo_transitive.rs` |
+| Prepare transitive content edges with child-owned wildcard env and reject genuine cycles and allow independent task return edges | `tests/turbo_transitive.rs` |
+| Respect parent filters/options, leave unrelated allowlisted tasks unavailable, and batch required owner closures | `tests/turbo_transitive.rs` |
 | Execute a single-package repository with colon-containing task names | `tests/turbo_single.rs` |
 | Use native Windows paths for recursive release and child execution | `tests/windows.rs`, Windows only |
 

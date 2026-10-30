@@ -373,7 +373,11 @@ pub fn download(project: &Project, packages: &[String]) -> Result<()> {
 
 /// Refresh directory-file snapshots using this repository's package manager and
 /// lifecycle configuration. Frozen resolution never updates dependency selections.
-pub(crate) fn refresh_frozen(project: &Project, env: &BTreeMap<String, String>) -> Result<()> {
+pub(crate) fn refresh_frozen(
+    project: &Project,
+    env: &BTreeMap<String, String>,
+    stderr: bool,
+) -> Result<()> {
     let root = &project.root;
     ordinary_file(&root.join("pnpm-lock.yaml"))?;
     let manifest: Value = config::read_json(&root.join("package.json"))?;
@@ -402,6 +406,9 @@ pub(crate) fn refresh_frozen(project: &Project, env: &BTreeMap<String, String>) 
         }
     }
     command.args(["install", "--frozen-lockfile"]);
+    if stderr {
+        command.stdout(std::io::stderr());
+    }
     let status = crate::run::wait_command(&mut command, "pnpm content refresh")?;
     ensure!(
         status.success(),
