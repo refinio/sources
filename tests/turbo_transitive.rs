@@ -820,6 +820,29 @@ process.exit(p.status ?? 1);
             .unwrap(),
         "absent",
     );
+    edit_json(&t.app.join("turbo.json"), |v| {
+        v["globalEnv"] = json!(["SOURCES_MISSING__BUILD"]);
+    });
+    let empty = success(
+        t.f.cli()
+            .current_dir(&t.app)
+            .env("CI", "true")
+            .args([
+                "turbo",
+                "run",
+                "build",
+                "--filter=top",
+                "--filter=!top",
+                "--dry=json",
+            ])
+            .output()
+            .unwrap(),
+    );
+    let empty: Value = serde_json::from_slice(&empty.stdout).unwrap();
+    assert!(
+        empty["tasks"].as_array().unwrap().is_empty(),
+        "an empty selected graph must not require global foreign inputs"
+    );
     for root in [&t.app, &t.middle, &t.leaf] {
         assert!(!root.join("executions.log").exists());
     }

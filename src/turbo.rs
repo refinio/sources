@@ -363,6 +363,9 @@ fn environment_names(env: &Environment) -> impl Iterator<Item = String> + '_ {
 }
 
 fn metadata_names(metadata: &Metadata) -> BTreeSet<String> {
+    if metadata.tasks.is_empty() {
+        return BTreeSet::new();
+    }
     environment_names(&metadata.global_cache_inputs.environment_variables)
         .chain(
             metadata
