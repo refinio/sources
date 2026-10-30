@@ -311,7 +311,7 @@ fs.renameSync(path + '.new', path);
     turbo_fixture::install_turbo(&managed);
     assert_eq!(
         std::fs::canonicalize(t.f.app.join("sources/shared")).unwrap(),
-        managed
+        std::fs::canonicalize(&managed).unwrap()
     );
     assert_eq!(
         run("pinned checkout refresh", "cache miss")["value"],
