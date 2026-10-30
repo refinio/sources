@@ -1,6 +1,6 @@
 # Sources
 
-`sources` selects development checkouts or exact release commits through stable workspace paths. Git source workspaces keep the same paths when switching between them. Optional pnpm integration switches local file dependencies to published package versions. Sources invokes the installed Git executable and does not build packages or publish releases.
+`sources` selects development checkouts or exact release commits through stable workspace paths. Git source workspaces keep the same paths when switching between them. Optional pnpm integration switches local file dependencies to published package versions. Sources invokes the installed Git executable. Optional Turbo integration delegates builds to each repository's native Turbo; Sources does not publish releases.
 
 Linux and Apple silicon macOS are supported. Native Windows is best effort. Use Git 2.39.5 or newer, with the SSH and credential setup your repositories require. The CLI is experimental and currently promises no backwards compatibility.
 
@@ -242,6 +242,15 @@ sources turbo run build --filter=@app/web
 For example, `@example/protocol:pack:app` exports `SOURCES_EXAMPLE_PROTOCOL__PACK_APP`. Declare only the hash variables a parent task consumes in its Turbo `env` list. Use an uncached parent preparation task that invokes `sources task` for required child outputs, then depend on that preparation task. Turbo owns the graph and cache; artifact staging and pnpm file-dependency refresh remain explicit workflow steps. Install local Turbo in the parent too.
 
 The outer lock is released before parent Turbo starts so nested task calls work. Keep configuration, checkout selection, and source contents stable during that parent build. Inherited `SOURCES_` values are cleared from all Turbo invocations. Parent Turbo receives its complete fresh snapshot; a configured child receives its own selected graph's relevant source hashes consistently for hash queries and execution. See [the bridge contract](docs/turbo-integration-spec.md) for a complete configuration example.
+
+For reuse based on emitted bytes, opt into per-task `content` artifact declarations.
+Sources runs the required upstream Turbo task, refreshes declared installed
+counterparts with the consuming owner's `pnpm install --frozen-lockfile`, and
+verifies their bytes before downstream hashing. Declare the separate
+`SOURCES_<PACKAGE>__<TASK>__CONTENT` env input in downstream Turbo. Existing task
+hash variables retain their meaning. The [content preparation contract](docs/turbo-integration-spec.md#opt-in-consumed-artifact-content-preparation)
+covers required metadata/assets, direct checkout consumption, native filtered
+refresh, locking and migration.
 
 ## Commands
 

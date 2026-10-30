@@ -32,6 +32,28 @@ pub struct PnpmPackage {
 #[serde(deny_unknown_fields)]
 pub struct TurboPackage {
     pub tasks: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub content: BTreeMap<String, ContentTask>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContentTask {
+    pub artifacts: Vec<ConsumedArtifact>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsumedArtifact {
+    /// Required file or nonempty directory, relative to the upstream checkout.
+    pub path: PathBuf,
+    /// Corresponding installed path, relative to this consuming project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed: Option<PathBuf>,
+}
+
+pub fn content_env_name(package: &str, task: &str) -> Result<String> {
+    Ok(format!("{}__CONTENT", turbo_env_name(package, task)?))
 }
 
 /// Stable environment identity for one exact child Turbo package/task pair.
@@ -82,8 +104,17 @@ impl Source {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pnpm_refresh: Option<PnpmRefresh>,
     pub directory: PathBuf,
     pub sources: BTreeMap<String, Source>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PnpmRefresh {
+    /// Native install selection. Include the tooling root and consumed importers.
+    pub filters: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -295,6 +326,17 @@ impl Project {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if let Some(refresh) = &self.config.pnpm_refresh {
+            ensure!(
+                !refresh.filters.is_empty()
+                    && refresh
+                        .filters
+                        .iter()
+                        .all(|filter| !filter.trim().is_empty()
+                            && !filter.chars().any(char::is_control)),
+                "pnpm_refresh.filters must contain nonempty native pnpm filter selectors"
+            );
+        }
         ensure!(
             !self.config.directory.as_os_str().is_empty(),
             "workspace link directory must not be empty"
@@ -373,6 +415,29 @@ impl Project {
                     !entry.tasks.is_empty(),
                     "{name}: package {package} must declare at least one Turbo task"
                 );
+                for (task, content) in &entry.content {
+                    ensure!(
+                        entry.tasks.contains(task),
+                        "{name}: content task {task:?} must be in the tasks allowlist"
+                    );
+                    ensure!(
+                        !content.artifacts.is_empty(),
+                        "{name}: content task {task:?} needs required artifacts"
+                    );
+                    for artifact in &content.artifacts {
+                        for path in std::iter::once(&artifact.path).chain(artifact.installed.iter())
+                        {
+                            ensure!(
+                                !path.as_os_str().is_empty()
+                                    && path
+                                        .components()
+                                        .all(|part| matches!(part, Component::Normal(_))),
+                                "{name}: artifact path {} must be a nonempty relative path without '.' or '..'",
+                                path.display()
+                            );
+                        }
+                    }
+                }
                 let mut tasks = std::collections::BTreeSet::new();
                 for task in &entry.tasks {
                     ensure!(
@@ -482,6 +547,7 @@ pub fn setup(root: PathBuf) -> Result<()> {
             &root.join(CONFIG),
             &Config {
                 version: 1,
+                pnpm_refresh: None,
                 directory: "sources".into(),
                 sources: BTreeMap::new(),
             },

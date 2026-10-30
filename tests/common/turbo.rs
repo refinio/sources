@@ -167,7 +167,10 @@ pub fn install_turbo(root: &Path) {
         "set SOURCES_TEST_TURBO to the installed Turbo 2.7.6 native executable before running tests",
     ));
     let version = success(Command::new(&binary).arg("--version").output().unwrap());
-    assert_eq!(String::from_utf8(version.stdout).unwrap().trim(), "2.7.6");
+    assert!(matches!(
+        String::from_utf8(version.stdout).unwrap().trim(),
+        "2.7.6" | "2.8.0"
+    ));
     let package = binary.parent().unwrap().parent().unwrap();
     let modules = root.join("node_modules");
     copy_tree(package, &modules.join(package.file_name().unwrap()));

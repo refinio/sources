@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
+mod artifacts;
 mod commands;
 mod pnpm;
 mod run;
@@ -237,7 +238,9 @@ fn main() {
         Ok(code) => code,
         Err(error) => {
             eprintln!("error: {}", sources::git::redact(&format!("{error:#}")));
-            1
+            error
+                .downcast_ref::<turbo::PreparationFailure>()
+                .map_or(1, |failure| failure.0)
         }
     };
     std::process::exit(code);

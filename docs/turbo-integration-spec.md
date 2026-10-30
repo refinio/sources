@@ -1,12 +1,14 @@
 # Sources–Turbo integration specification
 
-Status: agreed feature proposal and implementation handoff, 2026-10-21. These commands are not implemented by this document. Read alongside `docs/sources-cli-spec.md`; this proposal extends its command and locking contracts.
+Status: implemented bridge contract, with opt-in content preparation added in October 2026. Read alongside `docs/sources-cli-spec.md`; this proposal extends its command and locking contracts.
 
 ## Purpose
 
 Bridge independent Turbo-managed repositories without combining their pnpm workspaces or implementing another build system in Sources.
 
 Sources selects checkouts, restricts the child Turbo entry points the parent may invoke, and passes child task hashes to the parent's Turbo environment. Turbo owns task definitions, prerequisites, scheduling, input hashing, outputs, execution, and caching inside each repository.
+
+The baseline below describes task-hash mode. The [content preparation extension](#opt-in-consumed-artifact-content-preparation) explicitly adds upstream execution, fingerprinting, native frozen install refresh, and installed-byte verification for opted-in tasks.
 
 All feature configuration belongs in the consuming parent's `.sources.conf`. Child repositories need normal working Turbo tasks, but no Sources-specific configuration or metadata. No generic command arrays, arbitrary shell commands, or direct `package.json` script execution are supported by these new commands. Turbo naturally executes its underlying scripts as usual.
 
@@ -246,3 +248,130 @@ Follow `AGENTS.md` and local compatibility/test/review policy. Required reposito
 - https://turborepo.dev/docs/reference/run#--summarize
 - https://turborepo.dev/docs/reference/run#using-a-task-identifier
 - https://turborepo.dev/docs/crafting-your-repository/using-environment-variables
+
+## Opt-in consumed-artifact content preparation
+
+The October 2026 extension adds an explicit `content` map beside a package's
+existing `tasks` allowlist. Existing task-hash variables retain their values and
+semantics. No configuration or lock version changes, Turbo upgrade, consumer
+migration, or dependency installation occurs for configurations without `content`.
+
+```json
+{
+  "packages": {
+    "@example/protocol": {
+      "tasks": ["pack"],
+      "content": {
+        "pack": {
+          "artifacts": [
+            {"path": "packages/protocol/dist", "installed": "node_modules/@example/protocol/dist"},
+            {"path": "packages/protocol/package.json", "installed": "node_modules/@example/protocol/package.json"},
+            {"path": "packages/protocol/assets", "installed": "node_modules/@example/protocol/assets"}
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+This is a fragment of one source's configuration. Each content key must be an
+allowed task. `artifacts` is a nonempty list of required files or nonempty directory
+trees. `path` is relative to the selected upstream checkout. Optional `installed`
+is the corresponding file or directory relative to the consuming project, after
+native installation. Paths are literal nonempty relative paths without `.` or `..`
+components. Declare every consumed payload, including declarations, metadata and
+assets. Use individual file declarations when those files must exist even if their
+containing directory still has other files. Omit `installed` for bytes consumed
+directly through a managed Sources checkout link.
+
+Turbo remains responsible for declaring and restoring its outputs. These consumer
+paths select the actual consumed subset, which can also include static package
+metadata. They do not replace Turbo `outputs` or npm `files`/exports declarations.
+The packaging/staging task must prepare the exact installable contract before
+returning. Sources does not copy files, generate package metadata, clean outputs,
+interpret exports, or synthesize package archives.
+
+For `sources turbo`, Sources now performs these steps for configured content tasks:
+
+1. Resolve child-owned managed environment inputs with native Turbo dry metadata,
+   including global env, transitive tasks, wildcards and exclusions. Resolve required
+   upstream edges recursively and diagnose task cycles.
+2. Run each required upstream task once per canonical checkout/task within the
+   invocation, using that repository's native Turbo and resolved environment. Turbo
+   schedules its own prerequisites and restores its caches. Stop on failure and
+   preserve the upstream Turbo exit code. Never execute a task in the caller's
+   repository while the caller holds its project lock, even through an acyclic
+   repository return edge. Stage that foundation in an earlier invocation instead.
+3. Fingerprint required consumed artifact paths after successful execution or cache
+   restoration. Missing paths and empty required trees fail before downstream Turbo.
+4. When installed counterparts are declared, run the consuming repository's native
+   `pnpm install --frozen-lockfile`, once after its upstream group is prepared. Require
+   an existing ordinary `pnpm-lock.yaml` and an exact `packageManager: pnpm@<version>`
+   in its root manifest. The pnpm dispatcher must report that declared version.
+   Use the owner's normal registry, store, workspace, and lifecycle configuration.
+   Do not add `--ignore-scripts`, `--force`, update flags, or disable lifecycle scripts.
+   Frozen resolution preserves recorded versions and fails on lock/manifest drift.
+   By default installation covers the normal workspace. An optional root
+   `.sources.conf` field `"pnpm_refresh":{"filters":["tooling-root","@app/web..."]}`
+   selects the owner's existing finite importer closure through literal native
+   `--filter=<selector>` arguments. Include its tooling root and every consumed
+   importer that needs installation. Sources does not invent or widen selectors;
+   installed-artifact verification rejects incomplete refreshes.
+   This opt-in refresh is independent of the selection-time install skip logic.
+5. Compare installed consumed trees with the prepared upstream trees, including
+   relative file names, file bytes and Unix executable bits. Recheck upstream bytes
+   after installation as well. Missing, stale, extra, or lifecycle-modified installed
+   files fail preparation. No downstream hash or task execution is accepted on that
+   failure. pnpm package-directory links, including an external configured virtual
+   store, are resolved at each declared root. Descendant links/special files are
+   unsupported and fail explicitly; declare ordinary staged payloads instead.
+6. Supply `SOURCES_EXAMPLE_PROTOCOL__PACK__CONTENT` as a separate declared Turbo env
+   input. Its `sha256:` value covers a versioned, length-delimited, sorted inventory
+   of declared upstream paths, relative file names, bytes and executable bits.
+   It excludes absolute checkout paths, timestamps, native task hashes, logs, cache
+   status and run IDs. Refresh and verification precede the consuming Turbo's actual
+   hashing, including at intermediate repositories.
+
+The existing `SOURCES_EXAMPLE_PROTOCOL__PACK` still contains Turbo's input-derived
+hash. For content-based reuse, downstream `env` should select only the
+`__CONTENT` variable. A broad `SOURCES_*` wildcard includes both values unless it
+explicitly excludes the task-hash variable. Keeping the original task hash as an
+additional hashed input deliberately retains source-derived invalidation.
+
+No deferred Turbo hashing is required. The supported baseline Turbo 2.7.6 and
+consumer Turbo 2.8.0 both prepare before the downstream invocation. Sources does
+not claim to accelerate real consumers based on the disposable fixture results.
+
+`sources task` retains its direct execution contract, including exact pair
+validation before execution and its caller lock. Its selected task's own content
+outputs are not prepared a second time. If that task consumes configured content
+edges, their upstream preparation and this checkout's frozen refresh/verification
+occur before querying and executing the selected task. Existing explicit native
+Turbo prerequisites and staging scripts still run. Redundant legacy `sources task`
+preparation can be removed only by the consumer's deliberate migration.
+
+The consuming project's lock covers its preparation and refresh, then follows the
+existing released-lock contract for parent Turbo. Recursive refresh acquires the
+child consumer's project lock without waiting on an ancestor. As with the original
+bridge, keep checkouts, selections and configuration stable throughout a build.
+Nested Sources commands from lifecycle scripts or task scripts must not reenter a
+project whose lock is already held. Installation is not transactional; resolve a
+reported error and rerun. No rollback, arbitrary command hook, registry-selection
+change, recursive checkout activation or publication is introduced.
+
+### Acceptance and review scope
+
+The approved task is output-content-based caching across independent repositories,
+with Sources-owned native frozen pnpm refresh and installed-artifact verification.
+The public CLI stories use disposable real Git repositories, Sources-managed dev
+links, a pinned managed checkout, and ordinary pnpm directory-file installation.
+They reject stale downstream results and check native Turbo summaries for initial
+MISS, unchanged/cache-restored HIT, upstream source MISS with identical bytes and
+downstream HIT, changed content/path/deletion MISS, and asset invalidation. Upstream
+failure, missing required output, frozen-lock drift, and lifecycle-corrupted
+installed payloads must prevent downstream execution. Recursive content edges
+retain child env ownership, wildcard exclusions, task-cycle diagnostics and the
+ancestor-lock rejection. Existing native task-hash and nested-task stories remain
+required. No live consumer, global tool, release asset or RoboRev configuration is
+part of this change.

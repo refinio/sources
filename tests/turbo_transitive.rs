@@ -329,3 +329,105 @@ fn genuine_task_hash_cycle_reports_the_task_path_before_any_execution() {
         }
     }
 }
+
+#[test]
+fn content_edges_prepare_transitively_and_keep_child_owned_wildcard_env() {
+    let t = Chain::new();
+    for (root, dep) in [(&t.middle, "leaf"), (&t.app, "middle")] {
+        edit_json(&root.join(".sources.conf"), |config| {
+            config["sources"][dep]["packages"][dep]["content"] = json!({
+                "build":{"artifacts":[{"path":"packages/pkg/dist/result.json"}]}
+            });
+        });
+        edit_json(&root.join("turbo.json"), |config| {
+            config["tasks"]["build"]["env"] = json!([
+                "SOURCES_*",
+                format!("!SOURCES_{}__BUILD", dep.to_uppercase())
+            ]);
+        });
+    }
+    let script = std::fs::read_to_string(t.leaf.join("build.cjs"))
+        .unwrap()
+        .replace(
+            "fs.readFileSync('input.txt', 'utf8')",
+            "fs.readFileSync('input.txt', 'utf8').split('\\n')[0] + '\\n'",
+        );
+    std::fs::write(t.leaf.join("build.cjs"), script).unwrap();
+    t.run();
+    let first = t.output(&t.app);
+    assert_eq!(first["value"], "alpha\n");
+    assert!(
+        t.output(&t.middle)["env"]["SOURCES_LEAF__BUILD__CONTENT"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert_eq!(t.output(&t.middle)["env"].as_object().unwrap().len(), 1);
+    std::fs::write(
+        t.leaf.join("packages/pkg/input.txt"),
+        "alpha\ncomment only\n",
+    )
+    .unwrap();
+    t.run();
+    assert_eq!(t.output(&t.app), first);
+    assert_eq!(t.executions(&t.leaf), "build\nbuild\n");
+    for root in [&t.middle, &t.app] {
+        assert_eq!(t.executions(root), "build\n");
+    }
+    std::fs::write(t.leaf.join("packages/pkg/input.txt"), "beta\n").unwrap();
+    t.run();
+    assert_eq!(t.output(&t.app)["value"], "beta\n");
+    // A task cycle must be diagnosed before executing any node in that cycle.
+    connect(&t.f, &t.leaf, &t.middle, "middle", &["build"]);
+    edit_json(&t.leaf.join(".sources.conf"), |config| {
+        config["sources"]["middle"]["packages"]["middle"]["content"] =
+            json!({"build":{"artifacts":[{"path":"packages/pkg/dist/result.json"}]}});
+    });
+    edit_json(&t.leaf.join("turbo.json"), |config| {
+        config["tasks"]["build"]["env"] = json!(["SOURCES_MIDDLE__BUILD__CONTENT"]);
+    });
+    let before = [&t.leaf, &t.middle, &t.app].map(|root| t.executions(root));
+    common::failure(
+        t.f.cli()
+            .current_dir(&t.app)
+            .env("CI", "true")
+            .args(["turbo", "run", "build"])
+            .output()
+            .unwrap(),
+        "Turbo source task hash cycle",
+    );
+    assert_eq!(
+        [&t.leaf, &t.middle, &t.app].map(|root| t.executions(root)),
+        before
+    );
+
+    // Returning to a different task in the caller's repository is acyclic but
+    // cannot execute that ancestor while this process holds its project lock.
+    let foundation = t.app.join("packages/foundation");
+    std::fs::create_dir_all(&foundation).unwrap();
+    write_json(
+        &foundation.join("package.json"),
+        &json!({"name":"foundation", "version":"1.0.0", "scripts":{"build":"node -e \"throw Error('must not execute')\""}}),
+    );
+    connect(&t.f, &t.leaf, &t.app, "foundation", &["build"]);
+    edit_json(&t.leaf.join(".sources.conf"), |config| {
+        config["sources"]["foundation"]["packages"]["foundation"]["content"] =
+            json!({"build":{"artifacts":[{"path":"packages/foundation/dist"}]}});
+    });
+    edit_json(&t.leaf.join("turbo.json"), |config| {
+        config["tasks"]["build"]["env"] = json!(["SOURCES_FOUNDATION__BUILD__CONTENT"]);
+    });
+    common::failure(
+        t.f.cli()
+            .current_dir(&t.app)
+            .env("CI", "true")
+            .args(["turbo", "run", "build"])
+            .output()
+            .unwrap(),
+        "holding the caller lock",
+    );
+    assert_eq!(
+        [&t.leaf, &t.middle, &t.app].map(|root| t.executions(root)),
+        before
+    );
+}

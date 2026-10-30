@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
-use sources::config::Project;
+use sources::config::{ContentTask, Project};
 use sources::git::Git;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -14,6 +14,8 @@ struct SourceTasks {
     ids: Vec<String>,
     args: Vec<String>,
     env: BTreeMap<String, String>,
+    content: BTreeMap<String, ContentTask>,
+    digests: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -96,13 +98,11 @@ pub(crate) fn prepare_parent(project: &Project, arguments: &[OsString]) -> Resul
         })
         .collect::<Vec<_>>();
     let mut groups = prepare(project, &selectors)?;
-    let mut resolver = Resolver::default();
+    let mut resolver = Resolver::new(project)?;
     for source in &mut groups {
-        for (id, hash) in resolver.resolve(source)? {
-            let (package, task) = id.split_once('#').expect("prepared package/task identity");
-            parent.env(sources::config::turbo_env_name(package, task)?, hash);
-        }
+        parent.envs(resolver.resolve(source)?);
     }
+    refresh_and_verify(project, &groups)?;
     parent.args(arguments);
     Ok(parent)
 }
@@ -143,6 +143,8 @@ fn prepare(project: &Project, selectors: &[String]) -> Result<Vec<SourceTasks>> 
                 name: name.to_owned(),
                 checkout,
                 args: ids.clone(),
+                content: ids_content(project, name, &ids),
+                digests: BTreeMap::new(),
                 ids,
                 env: BTreeMap::new(),
             })
@@ -244,11 +246,25 @@ fn query(source: &mut SourceTasks) -> Result<(BTreeMap<String, String>, Metadata
 struct Resolver {
     visiting: Vec<(PathBuf, String)>,
     resolved: BTreeMap<(PathBuf, String), (SourceTasks, String)>,
+    executed: BTreeSet<(PathBuf, String)>,
+    caller: PathBuf,
 }
 
 impl Resolver {
+    fn new(project: &Project) -> Result<Self> {
+        Ok(Self {
+            caller: std::fs::canonicalize(&project.root)?,
+            ..Self::default()
+        })
+    }
+
     fn resolve(&mut self, source: &mut SourceTasks) -> Result<BTreeMap<String, String>> {
         let checkout = std::fs::canonicalize(&source.checkout)?;
+        ensure!(
+            source.content.is_empty() || checkout != self.caller,
+            "cannot prepare content task in ancestor {} holding the caller lock; stage it before invoking Sources",
+            checkout.display()
+        );
         // Plain Turbo children cannot introduce source hash edges. Query their
         // uncached tasks together, then reuse them across all consuming graphs.
         if !source.checkout.join(sources::config::CONFIG).is_file() {
@@ -321,13 +337,19 @@ impl Resolver {
                     .filter(|(name, _)| consumed.contains(name))
                     .map(|(_, selector)| selector)
                     .collect::<Vec<_>>();
+                let mut dependencies = Vec::new();
                 for mut dependency in prepare(&child, &selectors)? {
-                    for (id, hash) in self.resolve(&mut dependency)? {
-                        let (package, task) = id.split_once('#').expect("prepared identity");
-                        selected
-                            .env
-                            .insert(sources::config::turbo_env_name(package, task)?, hash);
-                    }
+                    selected.env.extend(self.resolve(&mut dependency)?);
+                    dependencies.push(dependency);
+                }
+                if dependencies.iter().any(|source| !source.content.is_empty()) {
+                    ensure!(
+                        checkout != self.caller,
+                        "cannot prepare content in ancestor {} holding the caller lock; stage that task before invoking Sources",
+                        checkout.display()
+                    );
+                    let _lock = crate::project_lock(&child.root, false)?;
+                    refresh_and_verify(&child, &dependencies)?;
                 }
                 // Use exactly this snapshot in both the real query and execution.
                 let mut selected_hashes = query(&mut selected)?.0;
@@ -340,7 +362,24 @@ impl Resolver {
             let (selected, hash) = &self.resolved[&key];
             source.env.extend(selected.env.clone());
             args.extend(selected.args.clone());
-            hashes.insert(id, hash.clone());
+            let (package, task) = id.split_once('#').expect("prepared identity");
+            hashes.insert(
+                sources::config::turbo_env_name(package, task)?,
+                hash.clone(),
+            );
+            if let Some(content) = source.content.get(&id) {
+                ensure!(
+                    checkout != self.caller,
+                    "cannot prepare content task {id} in ancestor {} holding the caller lock; stage it before invoking Sources",
+                    checkout.display()
+                );
+                if self.executed.insert(key.clone()) {
+                    execute_upstream(selected)?;
+                }
+                let digest = crate::artifacts::digest(&source.checkout, content)?;
+                source.digests.insert(id.clone(), digest.clone());
+                hashes.insert(sources::config::content_env_name(package, task)?, digest);
+            }
         }
         source.args = args;
         Ok(hashes)
@@ -360,13 +399,41 @@ fn configured_selectors(project: &Project) -> Result<BTreeMap<String, String>> {
                 format!("{package}:{task}"),
             ))
         })
+        .chain(
+            project
+                .config
+                .sources
+                .values()
+                .flat_map(|source| &source.packages)
+                .flat_map(|(package, entry)| entry.content.keys().map(move |task| (package, task)))
+                .map(|(package, task)| {
+                    Ok((
+                        sources::config::content_env_name(package, task)?,
+                        format!("{package}:{task}"),
+                    ))
+                }),
+        )
         .collect()
 }
 
 pub(crate) fn task(project: &Project, selectors: &[String]) -> Result<i32> {
     let mut groups = prepare(project, selectors)?;
     // Validate every source's selected tasks before any task is allowed to run.
-    let mut resolver = Resolver::default();
+    let uses_content = project
+        .config
+        .sources
+        .values()
+        .flat_map(|source| source.packages.values())
+        .any(|entry| !entry.content.is_empty());
+    for source in &mut groups {
+        // Direct task calls keep their execution contract. Content preparation is
+        // for the task's consumed dependencies, not another run of the task itself.
+        source.content.clear();
+        if uses_content {
+            query(source)?;
+        }
+    }
+    let mut resolver = Resolver::new(project)?;
     for source in &mut groups {
         resolver.resolve(source)?;
     }
@@ -385,4 +452,82 @@ pub(crate) fn task(project: &Project, selectors: &[String]) -> Result<i32> {
         }
     }
     Ok(0)
+}
+
+fn ids_content(project: &Project, owner: &str, ids: &[String]) -> BTreeMap<String, ContentTask> {
+    ids.iter()
+        .filter_map(|id| {
+            let (package, task) = id.split_once('#').expect("prepared identity");
+            project.config.sources[owner].packages[package]
+                .content
+                .get(task)
+                .map(|content| (id.clone(), content.clone()))
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparationFailure(pub i32);
+
+impl std::fmt::Display for PreparationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "upstream Turbo failed with exit status {}", self.0)
+    }
+}
+impl std::error::Error for PreparationFailure {}
+
+fn execute_upstream(source: &SourceTasks) -> Result<()> {
+    let mut command = command(&source.checkout)?;
+    command.arg("run").args(&source.args).envs(&source.env);
+    let status = crate::run::wait_command(&mut command, &source.name)?;
+    if let Err(error) = crate::run::warn_changes(&Git::at(&source.checkout), &source.name) {
+        eprintln!(
+            "warning: {}: cannot inspect source after command: {error:#}",
+            source.name
+        );
+    }
+    if !status.success() {
+        return Err(PreparationFailure(crate::run::exit_code(status)).into());
+    }
+    Ok(())
+}
+
+fn refresh_and_verify(project: &Project, groups: &[SourceTasks]) -> Result<()> {
+    let mut expected = Vec::new();
+    for source in groups {
+        for content in source.content.values() {
+            for artifact in &content.artifacts {
+                if let Some(installed) = &artifact.installed {
+                    expected.push((
+                        source.checkout.clone(),
+                        artifact.path.clone(),
+                        installed.clone(),
+                        crate::artifacts::snapshot(&source.checkout, &artifact.path)?,
+                    ));
+                }
+            }
+        }
+    }
+    if !expected.is_empty() {
+        crate::pnpm::refresh_frozen(project)?;
+    }
+    // Later upstream tasks or install lifecycles must not change an earlier
+    // snapshot, including paths consumed directly through checkout links.
+    for source in groups {
+        for (id, content) in &source.content {
+            ensure!(
+                crate::artifacts::digest(&source.checkout, content)? == source.digests[id],
+                "required artifacts for {id} changed during content preparation; stage deterministic, nonoverlapping outputs before retrying"
+            );
+        }
+    }
+    for (_, path, installed, before) in expected {
+        ensure!(
+            crate::artifacts::snapshot(&project.root, &installed)? == before,
+            "installed consumed artifact {} differs from prepared {}; fix the file-package reference, package files/exports or explicit staging task before retrying",
+            installed.display(),
+            path.display()
+        );
+    }
+    Ok(())
 }

@@ -34,6 +34,8 @@ The suite deliberately retires exhaustive malformed-input, transport fallback, u
 | Resolve only consumed task hashes and preserve cache across unrelated task changes | `tests/turbo_transitive.rs` |
 | Build and restore a repository cycle with an acyclic foundation task graph | `tests/turbo_transitive.rs` |
 | Reject a genuine task-hash cycle before execution with an actionable task path | `tests/turbo_transitive.rs` |
+| Prepare content artifacts, refresh native file installations, preserve cache on identical bytes, reject stale/missing payloads and use pinned checkouts | `tests/turbo_content.rs` |
+| Prepare transitive content edges with child-owned wildcard env and reject cycles/ancestor lock reentry | `tests/turbo_transitive.rs` |
 | Execute a single-package repository with colon-containing task names | `tests/turbo_single.rs` |
 | Use native Windows paths for recursive release and child execution | `tests/windows.rs`, Windows only |
 
@@ -50,6 +52,6 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-Use the matching native Turbo binary on macOS or Windows. The CLI stories also require Git, Node, Python 3 and pnpm 10.15.0. Fixtures isolate Git configuration and serve archives locally.
+Use the matching native Turbo binary on macOS or Windows. The fixture helper also accepts Turbo 2.8.0 for consumer-version validation; runtime Turbo selection remains owned by each repository. The CLI stories also require Git, Node, Python 3 and pnpm 10.15.0. Fixtures isolate Git configuration and serve archives locally.
 
 Distribution has a separate user story: install a native archive and run the packaged CLI. Its existing release gates in `.github/scripts/` verify matching versions, archive checksums, package smoke behavior and generated installer success/failure. Run those when changing packaging or installers; Rust checks alone do not cover installer behavior. This reduction does not remove native publication gates.
