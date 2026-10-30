@@ -17,7 +17,7 @@ The suite deliberately retires exhaustive malformed-input, transport fallback, u
 | Set up a project repeatedly without overwriting configuration | `tests/setup.rs` |
 | Capture branch, tag or commit development hints, set literal hints, and preserve configuration on capture failure | `tests/dev_hints.rs` |
 | Inspect a development checkout through a fork remote and discover its project | `tests/check.rs` |
-| Capture development heads, switch to pinned Git inputs, and return to development | `tests/release.rs` |
+| Capture development heads, switch to pinned Git inputs, reject conflicting transitive/root repository revisions, align pins, and return to development | `tests/release.rs` |
 | Discard disposable managed changes while preserving external development files | `tests/release.rs` |
 | Reuse cached inputs offline and recover a failed clean release | `tests/release.rs` |
 | Activate and update recorded recursive submodule pins | `tests/activation.rs` |

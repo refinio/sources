@@ -54,6 +54,7 @@ Exit with 0 on success, 1 for operational or validation failure, and 2 for inval
 - Link objects directly inside the configured workspace link directory are managed and replaceable. Their targets remain outside that ownership grant.
 - Managed clones obtain source objects from their configured upstreams. Locally cached commits are sufficient evidence for pin availability; there is no independent proof of current remote availability.
 - Managed activation includes recursive submodules at the commits recorded by their containing repositories.
+- Release and release readiness require one Git commit per normalized repository identity throughout the pinned Sources dependency graph. Repeated identical pins are allowed; conflicting pins fail before activation.
 - Network access follows the command policy below. Read-only local inspection does not fetch implicitly.
 
 ## Configuration files
@@ -277,6 +278,31 @@ No repositories are cloned or fetched. No mode is activated. Report which files 
 Validate configuration and all configured development mappings. Check existence, Git checkout roots, and expected upstream identity. Report dirty development sources as warnings. Return failure for invalid configuration, missing checkouts, or repository mismatches.
 
 This command does not require a complete release lock and does not validate remote commit availability. It does not repair links or fetch.
+
+### Pinned repository consistency
+
+`check-release` and every `release` mode inspect committed `.sources.conf` and
+`.sources.lock` files recursively at each selected Git revision. The same
+normalized upstream repository must select the same full commit everywhere,
+regardless of local source aliases or supported URL spellings. Identical repeats
+are visited once. Include the starting repository's HEAD when it has a Git origin,
+so a nested pin cannot introduce another version of the application itself.
+Projects without a Git origin still validate their entire pinned dependency graph.
+
+A conflict returns 1 and prints the repository identity, both full commits and
+both dependency paths. Align the owning lockfiles, commit and publish them, then
+update their consumers' pins. Do not substitute development checkouts, rewrite
+pins, or choose a version automatically. Repository cycles requiring different
+commits are invalid release inputs; development task graphs remain independent.
+
+Validation may acquire missing committed metadata using the normal shallow-cache
+policy. It does not activate nested Sources projects, move existing HEADs, change
+links, install packages or run builds. Normal release refuses conflicts before
+activation. Clean release retains its existing disposable-state deletion and
+partial-failure semantics. Offline release requires the transitive metadata caches
+and performs no network access; `check-release` can populate them beforehand.
+Registry release follows Git edges only for sources selected as Git, including
+nested Git-only edges. Registry package identity/version checks remain with pnpm.
 
 ### `sources check-release`
 

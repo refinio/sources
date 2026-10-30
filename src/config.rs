@@ -271,6 +271,32 @@ fn overlaps(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 
+pub(crate) fn resolve_url(root: &Path, url: &str) -> Result<String> {
+    ensure!(
+        !url.trim().is_empty(),
+        "missing upstream URL; edit {CONFIG}"
+    );
+    let scp_style = url
+        .split_once(':')
+        .is_some_and(|(host, _)| host.len() > 1 && !host.contains(['/', '\\']));
+    if !url.contains("://") && !scp_style && Path::new(url).is_relative() {
+        let path = upstream_path(&root.join(url))?;
+        return url::Url::from_file_path(&path)
+            .map_err(|()| anyhow::anyhow!("cannot resolve configured local upstream path"))
+            .map(String::from);
+    }
+    Ok(url.to_owned())
+}
+
+impl Config {
+    pub(crate) fn resolve_urls(&mut self, root: &Path) -> Result<()> {
+        for source in self.sources.values_mut() {
+            source.url = resolve_url(root, &source.url)?;
+        }
+        Ok(())
+    }
+}
+
 impl Project {
     pub fn load(root: PathBuf) -> Result<Self> {
         let mut config: Config = read_json(&root.join(CONFIG))?;
@@ -284,22 +310,7 @@ impl Project {
         } else {
             Local::default()
         };
-        for source in config.sources.values_mut() {
-            ensure!(
-                !source.url.trim().is_empty(),
-                "missing upstream URL; edit {CONFIG}"
-            );
-            let scp_style = source
-                .url
-                .split_once(':')
-                .is_some_and(|(host, _)| host.len() > 1 && !host.contains(['/', '\\']));
-            if !source.url.contains("://") && !scp_style && Path::new(&source.url).is_relative() {
-                let path = upstream_path(&root.join(&source.url))?;
-                source.url = url::Url::from_file_path(&path)
-                    .map_err(|()| anyhow::anyhow!("cannot resolve configured local upstream path"))?
-                    .to_string();
-            }
-        }
+        config.resolve_urls(&root)?;
         Ok(Self {
             root,
             config,

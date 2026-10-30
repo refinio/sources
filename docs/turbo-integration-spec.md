@@ -137,13 +137,13 @@ lifetimes are not globally serialized by Sources. Keep selections, configuration
 and build inputs stable for the whole invocation. `sources run` retains its
 separate whole-command lock contract.
 
-Hash composition requires active checkouts and installed local Turbo. It does not bootstrap nested Sources projects. `sources release` activates only its own project's direct pinned Git checkouts and their Git submodules; it does not recursively interpret the checkouts' `.sources.conf` files or share an ancestor's checkout selections.
+Hash composition requires active checkouts and installed local Turbo. It does not bootstrap nested Sources projects. `sources release` activates only its own project's direct pinned Git checkouts and their Git submodules; it validates their committed nested configs/locks for consistent repository versions, but does not recursively activate their Sources projects or share an ancestor's checkout selections.
 
-A finite selected package graph can use native filtered frozen pnpm installs even when the repository graph contains a cycle. Select the private tooling root and the exact required packages with their dependency closures. For example, an application in ONE may consume Fotos core, which consumes ONE foundation. Activate the needed source edges explicitly, then install and build from foundation toward the application. The following fixture names illustrate the sequence; substitute the actual root and package names from each owning repository:
+In development, a finite selected package graph can use native filtered frozen pnpm installs even when the repository graph contains a cycle. Release validation rejects any pinned graph that needs different commits of one repository, including a back-reference to a different starting-repository commit. Break or reorganize such release dependencies; a build filter cannot waive this invariant. Select the private tooling root and the exact required packages with their dependency closures. For example, an application in ONE may consume Fotos core, which consumes ONE foundation. Activate the needed source edges explicitly, then install and build from foundation toward the application. The following fixture names illustrate the sequence; substitute the actual root and package names from each owning repository:
 
 ```sh
-sources release
-sources -C sources/fotos release
+sources dev
+sources -C sources/fotos dev
 
 pnpm --dir sources/fotos/sources/one --filter one-tooling --filter '@fixture/one-foundation...' install --frozen-lockfile
 sources -C sources/fotos task @fixture/one-foundation:build
@@ -157,11 +157,9 @@ sources turbo run build --filter=@fixture/one-app
 
 For several independent foundation packages, list each required `--filter '<package>...'`; one selector suffices only when its dependency closure includes them all. Include the owning private root so its pinned Turbo and other build tools are installed. `--offline` is optional and requires the package store to be populated. The examples use Git sources without registry-selection mappings, so activation and pnpm installation remain separate explicit steps.
 
-The foundation checkout's unselected application may reference `sources/fotos` without activating that edge. Its own Sources configuration remains present, but the selected foundation tasks must not consume that external hash or require that directory. The two ONE checkouts may have different commits: each selected checkout must honor the Git pin of its immediate consuming project. Do not substitute an ancestor checkout for a different child pin.
+The foundation checkout's unselected application may reference `sources/fotos` without activating that edge. Its own Sources configuration remains present, but the selected foundation tasks must not consume that external hash or require that directory. Development checkout selection is independent of Git release pins. A release graph must use one commit of ONE throughout; resolve inconsistent child pins at their owners and update consumers rather than substituting checkouts or running a mixed-version bootstrap.
 
-This workflow was verified with pnpm 10.15.0, real Git release checkouts, committed frozen locks, and Turbo 2.7.6 installed by pnpm. A disposable workspace with an unselected missing directory-file dependency installed its tooling root and selected package dependency closure with a fresh store, leaving the unselected importer uninstalled and the lock unchanged. Whole-workspace frozen installation failed on the missing target. A separate ONE/Fotos release fixture then completed the directed build above while the foundation owner's nested Fotos link stayed absent; both selected managed commits matched their Sources pins and all pnpm locks stayed unchanged. Ordinary lifecycle-script handling was used in that release fixture.
-
-This proves the selected-closure workflow, not recursive activation of every embedded Sources project or whole-workspace installation. Actual repository filters, frozen locks, internal file dependencies, tooling-root dependencies, and lifecycle scripts must respect that closure. Build each source output before installing the downstream directory-file package that snapshots it. If a required selected importer or lifecycle script needs the missing reverse edge, filtering does not solve that graph; assess that separately instead of adding unbounded recursive activation. The actual consuming repositories still require their own integration validation.
+This is a selected-closure development workflow, not permission to use inconsistent release pins, recursively activate every embedded Sources project, or install every workspace. Actual repository filters, frozen locks, internal file dependencies, tooling-root dependencies, and lifecycle scripts must respect that closure. Build each source output before installing the downstream directory-file package that snapshots it. If a required selected importer or lifecycle script needs the missing reverse edge, filtering does not solve that graph; assess that separately instead of adding unbounded recursive activation. The actual consuming repositories still require their own integration validation.
 
 ## Command: `sources task`
 

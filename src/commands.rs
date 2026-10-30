@@ -110,6 +110,7 @@ pub fn check_release(project: &Project) -> Result<()> {
             );
         }
     }
+    let mut revisions = std::collections::BTreeMap::new();
     for (name, source) in &project.config.sources {
         let revision = ensure_revision(
             &project.managed(name),
@@ -122,7 +123,9 @@ pub fn check_release(project: &Project) -> Result<()> {
             format!("{name}: cannot cache release inputs; rerun sources check-release")
         })?;
         println!("{name}: release inputs cached at {}", revision.commit);
+        revisions.insert(name.clone(), revision);
     }
+    sources::release_graph::validate(project, &revisions, Acquisition::EnsureCached, false)?;
     Ok(())
 }
 
