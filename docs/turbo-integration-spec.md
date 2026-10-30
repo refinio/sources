@@ -349,10 +349,9 @@ For `sources turbo`, Sources now performs these steps for configured content tas
    their combined environment. Collect final native hashes only after that shared
    refresh, so a lifecycle generator cannot erase an earlier task's inputs by
    seeing only a later task's partial environment. Memoized tasks retain their own
-   consumed edges, preserving task-level cycle handling. If a selected task's hash
-   was already resolved and the shared refresh changes it, fail and require a new
-   invocation rather than replacing a snapshot already used by another consumer.
-   Sources does not monitor lifecycle mutations of unselected task inputs. Keep
+   consumed edges, preserving task-level cycle handling. Settle each snapshot once
+   in dependency order. Sources does not monitor lifecycle mutations of already
+   settled or unselected task inputs. Keep
    lifecycle generation and explicit staging consistent with the selected contract;
    after editing those inputs or selections, rerun the complete command.
    This opt-in refresh is independent of the selection-time install skip logic.
