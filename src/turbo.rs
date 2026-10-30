@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
-use sources::config::Project;
+use sources::config::{ContentTask, Project};
 use sources::git::Git;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -14,6 +14,8 @@ struct SourceTasks {
     ids: Vec<String>,
     args: Vec<String>,
     env: BTreeMap<String, String>,
+    content: BTreeMap<String, ContentTask>,
+    digests: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -26,12 +28,16 @@ struct Metadata {
     global_cache_inputs: GlobalInputs,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Task {
     task_id: String,
     hash: String,
     command: String,
+    #[serde(default)]
+    dependencies: Vec<String>,
+    #[serde(default)]
+    with: Vec<String>,
     #[serde(default)]
     environment_variables: Environment,
 }
@@ -43,7 +49,7 @@ struct GlobalInputs {
     environment_variables: Environment,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 struct Environment {
     #[serde(default)]
     configured: Vec<String>,
@@ -63,47 +69,78 @@ fn command(root: &Path) -> Result<Command> {
     );
     let mut command = crate::pnpm::pnpm_command(root);
     command.args(["exec", "turbo"]);
-    // Only snapshots computed for this checkout may enter its Turbo environment.
-    // Ancestor hashes can describe another graph or an obsolete configuration.
-    for (key, _) in std::env::vars_os() {
-        let prefix = key.as_encoded_bytes().get(..b"SOURCES_".len());
-        let managed = prefix.is_some_and(|prefix| {
-            if cfg!(windows) {
-                prefix.eq_ignore_ascii_case(b"SOURCES_")
-            } else {
-                prefix == b"SOURCES_"
-            }
-        });
-        if managed {
-            command.env_remove(key);
-        }
-    }
+    crate::pnpm::clear_sources_env(&mut command);
     Ok(command)
 }
 
 pub(crate) fn prepare_parent(project: &Project, arguments: &[OsString]) -> Result<Command> {
     let mut parent = command(&project.root)?;
-    let selectors = project
-        .config
-        .sources
-        .values()
-        .flat_map(|source| &source.packages)
-        .flat_map(|(package, entry)| {
-            entry
-                .tasks
-                .iter()
-                .map(move |task| format!("{package}:{task}"))
-        })
-        .collect::<Vec<_>>();
-    let mut groups = prepare(project, &selectors)?;
-    let mut resolver = Resolver::default();
-    for source in &mut groups {
-        for (id, hash) in resolver.resolve(source)? {
-            let (package, task) = id.split_once('#').expect("prepared package/task identity");
-            parent.env(sources::config::turbo_env_name(package, task)?, hash);
-        }
-    }
     parent.args(arguments);
+    let mut options = arguments.iter().take_while(|arg| *arg != "--");
+    if options
+        .clone()
+        .any(|arg| matches!(arg.to_str(), Some("--help" | "-h" | "--version" | "-V")))
+    {
+        return Ok(parent);
+    }
+    let mut discovery = Vec::new();
+    let mut task_arguments = false;
+    for argument in arguments {
+        if !task_arguments && argument == "--" {
+            discovery.push(OsString::from("--dry=json"));
+            task_arguments = true;
+        }
+        if !task_arguments
+            && argument.to_str().is_some_and(|arg| {
+                arg == "--dry"
+                    || arg == "--dry-run"
+                    || arg.starts_with("--dry=")
+                    || arg.starts_with("--dry-run=")
+            })
+        {
+            continue;
+        }
+        discovery.push(argument.clone());
+    }
+    if !task_arguments {
+        discovery.push(OsString::from("--dry=json"));
+    }
+    let mut graph =
+        Graph::new(options.any(|arg| arg.to_str().is_some_and(|arg| arg.starts_with("--dry"))));
+    let root = std::fs::canonicalize(&project.root)?;
+    graph.load_owner(&root)?;
+    let inputs = {
+        let _lock = crate::project_lock(&root, true)?;
+        let candidates = configured_selectors(project)?;
+        let env = candidates
+            .keys()
+            .map(|name| (name.clone(), String::new()))
+            .collect();
+        let metadata = metadata_command(&root, &discovery, &env, "parent Turbo")?;
+        let names = metadata_names(&metadata);
+        // Parent selection options can prune native prerequisites. Foreign return
+        // queries use their owner's normal exact-task closure, a different batch.
+        inputs_for(project, &names)?
+    };
+    graph.discover(
+        inputs
+            .values()
+            .map(|input| input.producer.clone())
+            .collect(),
+    )?;
+    graph.execute.extend(
+        inputs
+            .values()
+            .filter(|input| input.content.is_some())
+            .map(|input| input.producer.clone()),
+    );
+    graph.settle()?;
+    let (env, groups) = graph.environment(&inputs)?;
+    {
+        let _lock = crate::project_lock(&root, true)?;
+        refresh_and_verify(project, &groups, &env, graph.stderr)?;
+    }
+    parent.envs(env);
     Ok(parent)
 }
 
@@ -143,6 +180,8 @@ fn prepare(project: &Project, selectors: &[String]) -> Result<Vec<SourceTasks>> 
                 name: name.to_owned(),
                 checkout,
                 args: ids.clone(),
+                content: ids_content(project, name, &ids),
+                digests: BTreeMap::new(),
                 ids,
                 env: BTreeMap::new(),
             })
@@ -150,18 +189,23 @@ fn prepare(project: &Project, selectors: &[String]) -> Result<Vec<SourceTasks>> 
         .collect()
 }
 
-fn query_metadata(source: &SourceTasks, args: &[String]) -> Result<Metadata> {
+fn metadata_command(
+    root: &Path,
+    args: &[OsString],
+    env: &BTreeMap<String, String>,
+    name: &str,
+) -> Result<Metadata> {
     let output = tempfile::tempfile()?;
-    let mut command = command(&source.checkout)?;
-    command.args(["run"]).args(args).arg("--dry=json");
-    command.envs(&source.env);
-    command.stdout(Stdio::from(output.try_clone()?));
-    let status = crate::run::wait_command(&mut command, &source.name)
-        .context("cannot query child Turbo; install pnpm and bootstrap the child repository")?;
+    let mut command = command(root)?;
+    command
+        .args(args)
+        .envs(env)
+        .stdout(Stdio::from(output.try_clone()?));
+    let status = crate::run::wait_command(&mut command, name)
+        .context("cannot query Turbo; install pnpm and bootstrap the owning repository")?;
     ensure!(
         status.success(),
-        "{}: Turbo metadata query failed ({status}); fix the child Turbo configuration and retry",
-        source.name
+        "{name}: Turbo metadata query failed ({status}); fix the Turbo configuration and retry"
     );
     use std::io::{Read, Seek};
     let mut output = output;
@@ -169,15 +213,22 @@ fn query_metadata(source: &SourceTasks, args: &[String]) -> Result<Metadata> {
     let mut bytes = Vec::new();
     output.read_to_end(&mut bytes)?;
     let metadata: Metadata = serde_json::from_slice(&bytes).with_context(|| {
-        format!("{}: invalid or unsupported Turbo dry-run JSON; expected schema version 1 with taskId, hash and command fields", source.name)
+        format!("{name}: invalid or unsupported Turbo dry-run JSON; expected schema version 1 with taskId, hash and command fields")
     })?;
     ensure!(
         metadata.version == "1",
-        "{}: unsupported Turbo metadata version {:?}; expected 1",
-        source.name,
+        "{name}: unsupported Turbo metadata version {:?}; expected 1",
         metadata.version
     );
     Ok(metadata)
+}
+
+fn query_metadata(source: &SourceTasks, args: &[String]) -> Result<Metadata> {
+    let args = std::iter::once(OsString::from("run"))
+        .chain(args.iter().map(OsString::from))
+        .chain(std::iter::once(OsString::from("--dry=json")))
+        .collect::<Vec<_>>();
+    metadata_command(&source.checkout, &args, &source.env, &source.name)
 }
 
 fn query(source: &mut SourceTasks) -> Result<(BTreeMap<String, String>, Metadata)> {
@@ -238,112 +289,382 @@ fn query(source: &mut SourceTasks) -> Result<(BTreeMap<String, String>, Metadata
     Ok((hashes, metadata))
 }
 
-// Resolve one selected task at a time. Repository-level recursion would reject
-// valid graphs that return to a different, independent task in the same checkout.
-#[derive(Default)]
-struct Resolver {
-    visiting: Vec<(PathBuf, String)>,
-    resolved: BTreeMap<(PathBuf, String), (SourceTasks, String)>,
+// Discovery is a graph snapshot, not execution. Native queries are batched by
+// canonical owner/frontier; only the selected closure becomes graph entries.
+type Key = (PathBuf, String);
+type Inputs = BTreeMap<String, Input>;
+
+#[derive(Clone)]
+struct Input {
+    producer: Key,
+    content: Option<ContentTask>,
 }
 
-impl Resolver {
-    fn resolve(&mut self, source: &mut SourceTasks) -> Result<BTreeMap<String, String>> {
-        let checkout = std::fs::canonicalize(&source.checkout)?;
-        // Plain Turbo children cannot introduce source hash edges. Query their
-        // uncached tasks together, then reuse them across all consuming graphs.
-        if !source.checkout.join(sources::config::CONFIG).is_file() {
-            let mut pending = source.clone();
-            pending
-                .ids
-                .retain(|id| !self.resolved.contains_key(&(checkout.clone(), id.clone())));
-            if !pending.ids.is_empty() {
-                let (hashes, _) = query(&mut pending)?;
-                for (id, arg) in pending.ids.iter().zip(&pending.args) {
-                    let mut selected = pending.clone();
-                    selected.ids = vec![id.clone()];
-                    selected.args = vec![arg.clone()];
-                    self.resolved.insert(
-                        (checkout.clone(), id.clone()),
-                        (selected, hashes[id].clone()),
+struct Node {
+    inputs: Inputs,
+    hash: Option<String>,
+}
+
+struct Owner {
+    project: Option<Project>,
+    root_name: String,
+    tasks: BTreeMap<String, Task>,
+}
+
+impl Owner {
+    fn ingest(&mut self, metadata: Metadata) {
+        let normalize = |id: &str| {
+            if !metadata.monorepo {
+                format!("{}#{id}", self.root_name)
+            } else if let Some(task) = id.strip_prefix("//#") {
+                format!("{}#{task}", self.root_name)
+            } else {
+                id.to_owned()
+            }
+        };
+        for mut task in metadata.tasks {
+            task.task_id = normalize(&task.task_id);
+            task.dependencies = task.dependencies.iter().map(|id| normalize(id)).collect();
+            task.with = task.with.iter().map(|id| normalize(id)).collect();
+            task.environment_variables.configured.extend(
+                metadata
+                    .global_cache_inputs
+                    .environment_variables
+                    .configured
+                    .clone(),
+            );
+            self.tasks.insert(task.task_id.clone(), task);
+        }
+    }
+
+    fn names(&self, id: &str) -> BTreeSet<String> {
+        let mut pending = vec![id.to_owned()];
+        let mut seen = BTreeSet::new();
+        let mut names = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            // Native selection options such as --only can omit prerequisites.
+            if let Some(task) = self.tasks.get(&id) {
+                names.extend(environment_names(&task.environment_variables));
+                pending.extend(task.dependencies.clone());
+                pending.extend(task.with.clone());
+            }
+        }
+        names
+    }
+}
+
+fn environment_names(env: &Environment) -> impl Iterator<Item = String> + '_ {
+    env.configured
+        .iter()
+        .filter_map(|value| value.split_once('=').map(|(name, _)| name.to_owned()))
+}
+
+fn metadata_names(metadata: &Metadata) -> BTreeSet<String> {
+    if metadata.tasks.is_empty() {
+        return BTreeSet::new();
+    }
+    environment_names(&metadata.global_cache_inputs.environment_variables)
+        .chain(
+            metadata
+                .tasks
+                .iter()
+                .flat_map(|task| environment_names(&task.environment_variables)),
+        )
+        .collect()
+}
+
+fn inputs_for(project: &Project, names: &BTreeSet<String>) -> Result<Inputs> {
+    let candidates = configured_selectors(project)?;
+    let selectors = names
+        .iter()
+        .filter_map(|name| candidates.get(name).cloned())
+        .collect::<Vec<_>>();
+    let groups = prepare(project, &selectors)?;
+    let mut selected = BTreeMap::new();
+    for source in groups {
+        let root = std::fs::canonicalize(&source.checkout)?;
+        for id in &source.ids {
+            let (package, task) = id.split_once('#').expect("prepared identity");
+            selected.insert(
+                format!("{package}:{task}"),
+                (root.clone(), id.clone(), source.content.get(id).cloned()),
+            );
+        }
+    }
+    names
+        .iter()
+        .filter_map(|name| candidates.get(name).map(|selector| (name, selector)))
+        .map(|(name, selector)| {
+            let (root, id, content) = &selected[selector];
+            let (package, task) = id.split_once('#').expect("prepared identity");
+            Ok((
+                name.clone(),
+                Input {
+                    producer: (root.clone(), id.clone()),
+                    content: if name == &sources::config::content_env_name(package, task)? {
+                        content.clone()
+                    } else {
+                        None
+                    },
+                },
+            ))
+        })
+        .collect()
+}
+
+fn selection(root: &Path, ids: Vec<String>, env: BTreeMap<String, String>) -> SourceTasks {
+    SourceTasks {
+        name: root.display().to_string(),
+        checkout: root.to_owned(),
+        args: ids.clone(),
+        ids,
+        env,
+        content: BTreeMap::new(),
+        digests: BTreeMap::new(),
+    }
+}
+
+struct Graph {
+    owners: BTreeMap<PathBuf, Owner>,
+    nodes: BTreeMap<Key, Node>,
+    execute: BTreeSet<Key>,
+    stderr: bool,
+}
+
+impl Graph {
+    fn new(stderr: bool) -> Self {
+        Self {
+            owners: BTreeMap::new(),
+            nodes: BTreeMap::new(),
+            execute: BTreeSet::new(),
+            stderr,
+        }
+    }
+
+    fn load_owner(&mut self, root: &Path) -> Result<()> {
+        if self.owners.contains_key(root) {
+            return Ok(());
+        }
+        let project = if root.join(sources::config::CONFIG).is_file() {
+            let _lock = crate::project_lock(root, true)?;
+            let project = Project::load(root.to_owned())?;
+            project.validate()?;
+            Some(project)
+        } else {
+            None
+        };
+        let manifest: serde_json::Value = sources::config::read_json(&root.join("package.json"))?;
+        self.owners.insert(
+            root.to_owned(),
+            Owner {
+                project,
+                root_name: manifest["name"].as_str().unwrap_or("//").to_owned(),
+                tasks: BTreeMap::new(),
+            },
+        );
+        Ok(())
+    }
+
+    fn discover(&mut self, mut frontier: BTreeSet<Key>) -> Result<()> {
+        while !frontier.is_empty() {
+            let mut batches: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+            for (root, id) in frontier {
+                if !self.nodes.contains_key(&(root.clone(), id.clone())) {
+                    batches.entry(root).or_default().push(id);
+                }
+            }
+            frontier = BTreeSet::new();
+            for (root, ids) in batches {
+                self.load_owner(&root)?;
+                let owner = self.owners.get_mut(&root).expect("loaded owner");
+                let _lock = owner
+                    .project
+                    .as_ref()
+                    .map(|_| crate::project_lock(&root, true))
+                    .transpose()?;
+                let missing = ids
+                    .iter()
+                    .filter(|id| !owner.tasks.contains_key(*id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !missing.is_empty() {
+                    let candidates = owner
+                        .project
+                        .as_ref()
+                        .map(configured_selectors)
+                        .transpose()?
+                        .unwrap_or_default();
+                    let mut source = selection(
+                        &root,
+                        missing,
+                        candidates
+                            .keys()
+                            .map(|name| (name.clone(), String::new()))
+                            .collect(),
                     );
+                    let (_, metadata) = query(&mut source)?;
+                    owner.ingest(metadata);
+                }
+                let mut names = BTreeMap::new();
+                for id in &ids {
+                    let task = &owner.tasks[id];
+                    ensure!(
+                        !task.command.trim().is_empty() && task.command != "<NONEXISTENT>",
+                        "{}: selected Turbo task {id:?} has no executable package script",
+                        root.display()
+                    );
+                    names.insert(id.clone(), owner.names(id));
+                }
+                let all_names = names
+                    .values()
+                    .flat_map(|names| names.iter().cloned())
+                    .collect();
+                let available = owner
+                    .project
+                    .as_ref()
+                    .map(|project| inputs_for(project, &all_names))
+                    .transpose()?
+                    .unwrap_or_default();
+                for id in ids {
+                    let inputs: Inputs = available
+                        .iter()
+                        .filter(|(name, _)| names[&id].contains(*name))
+                        .map(|(name, input)| (name.clone(), input.clone()))
+                        .collect();
+                    for input in inputs.values() {
+                        if input.content.is_some() {
+                            self.execute.insert(input.producer.clone());
+                        }
+                        if !self.nodes.contains_key(&input.producer) {
+                            frontier.insert(input.producer.clone());
+                        }
+                    }
+                    self.nodes
+                        .insert((root.clone(), id), Node { inputs, hash: None });
                 }
             }
         }
-        let mut hashes = BTreeMap::new();
-        let mut args = Vec::new();
-        for id in source.ids.clone() {
-            let key = (checkout.clone(), id.clone());
-            if let Some(start) = self.visiting.iter().position(|entry| entry == &key) {
-                let path = self.visiting[start..]
+        self.check_cycles()
+    }
+
+    fn check_cycles(&self) -> Result<()> {
+        fn visit(
+            key: &Key,
+            nodes: &BTreeMap<Key, Node>,
+            path: &mut Vec<Key>,
+            done: &mut BTreeSet<Key>,
+        ) -> Result<()> {
+            if done.contains(key) {
+                return Ok(());
+            }
+            if let Some(start) = path.iter().position(|entry| entry == key) {
+                let cycle = path[start..]
                     .iter()
-                    .chain(std::iter::once(&key))
+                    .chain(std::iter::once(key))
                     .map(|(root, id)| format!("{}:{id}", root.display()))
                     .collect::<Vec<_>>()
                     .join(" -> ");
                 anyhow::bail!(
-                    "Turbo source task hash cycle: {path}; remove a cyclic SOURCES_* task env dependency in turbo.json"
+                    "Turbo source task hash cycle: {cycle}; remove a cyclic SOURCES_* task env dependency in turbo.json"
                 );
             }
-            if !self.resolved.contains_key(&key) {
-                self.visiting.push(key.clone());
-                let mut selected = source.clone();
-                selected.ids = vec![id.clone()];
-                selected.env.clear();
-                let child = Project::load(selected.checkout.clone())?;
-                sources::config::real_directory_if_present(&child.internal())?;
-                std::fs::create_dir_all(child.internal())?;
-                child.validate()?;
-                // Supply candidate names only to the discovery query. Turbo expands
-                // env wildcards/exclusions for its selected and transitive tasks.
-                // These placeholder values never reach execution or exported hashes.
-                let candidates = configured_selectors(&child)?;
-                selected.env = candidates
-                    .keys()
-                    .map(|name| (name.clone(), String::new()))
-                    .collect();
-                let (_, metadata) = query(&mut selected)?;
-                let consumed: BTreeSet<_> = metadata
-                    .global_cache_inputs
-                    .environment_variables
-                    .configured
-                    .iter()
-                    .chain(
-                        metadata
-                            .tasks
-                            .iter()
-                            .flat_map(|task| &task.environment_variables.configured),
-                    )
-                    .filter_map(|value| value.split_once('=').map(|(name, _)| name.to_owned()))
-                    .collect();
-                selected.env.clear();
-                let selectors = candidates
-                    .into_iter()
-                    .filter(|(name, _)| consumed.contains(name))
-                    .map(|(_, selector)| selector)
-                    .collect::<Vec<_>>();
-                for mut dependency in prepare(&child, &selectors)? {
-                    for (id, hash) in self.resolve(&mut dependency)? {
-                        let (package, task) = id.split_once('#').expect("prepared identity");
-                        selected
-                            .env
-                            .insert(sources::config::turbo_env_name(package, task)?, hash);
-                    }
-                }
-                // Use exactly this snapshot in both the real query and execution.
-                let mut selected_hashes = query(&mut selected)?.0;
-                let hash = selected_hashes
-                    .remove(&id)
-                    .expect("validated selected hash");
-                self.resolved.insert(key.clone(), (selected, hash));
-                self.visiting.pop();
+            path.push(key.clone());
+            for input in nodes[key].inputs.values() {
+                visit(&input.producer, nodes, path, done)?;
             }
-            let (selected, hash) = &self.resolved[&key];
-            source.env.extend(selected.env.clone());
-            args.extend(selected.args.clone());
-            hashes.insert(id, hash.clone());
+            path.pop();
+            done.insert(key.clone());
+            Ok(())
         }
-        source.args = args;
-        Ok(hashes)
+        let mut done = BTreeSet::new();
+        for key in self.nodes.keys() {
+            visit(key, &self.nodes, &mut Vec::new(), &mut done)?;
+        }
+        Ok(())
+    }
+
+    fn environment(&self, inputs: &Inputs) -> Result<(BTreeMap<String, String>, Vec<SourceTasks>)> {
+        let mut env = BTreeMap::new();
+        let mut groups = Vec::new();
+        for (name, input) in inputs {
+            let (root, id) = &input.producer;
+            let value = if let Some(content) = &input.content {
+                let digest = crate::artifacts::digest(root, content)?;
+                let mut source = selection(root, vec![id.clone()], BTreeMap::new());
+                source.content.insert(id.clone(), content.clone());
+                source.digests.insert(id.clone(), digest.clone());
+                groups.push(source);
+                digest
+            } else {
+                self.nodes[&input.producer]
+                    .hash
+                    .clone()
+                    .expect("settled input")
+            };
+            env.insert(name.clone(), value);
+        }
+        Ok((env, groups))
+    }
+
+    fn settle(&mut self) -> Result<()> {
+        while self.nodes.values().any(|node| node.hash.is_none()) {
+            let mut batches: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+            for ((root, id), node) in &self.nodes {
+                if node.hash.is_none()
+                    && node
+                        .inputs
+                        .values()
+                        .all(|input| self.nodes[&input.producer].hash.is_some())
+                {
+                    batches.entry(root.clone()).or_default().push(id.clone());
+                }
+            }
+            for (root, ids) in batches {
+                let inputs: Inputs = ids
+                    .iter()
+                    .flat_map(|id| self.nodes[&(root.clone(), id.clone())].inputs.clone())
+                    .collect();
+                let (env, groups) = self.environment(&inputs)?;
+                let mut source = selection(&root, ids.clone(), env);
+                let hashes = {
+                    let owner = &self.owners[&root];
+                    let _lock = owner
+                        .project
+                        .as_ref()
+                        .map(|_| crate::project_lock(&root, true))
+                        .transpose()?;
+                    if let Some(project) = &owner.project {
+                        refresh_and_verify(project, &groups, &source.env, self.stderr)?;
+                    }
+                    query(&mut source)?.0
+                };
+                // Native scripts may call Sources in another owner and return to
+                // a different task here. No project lock crosses execution.
+                let args: BTreeMap<_, _> = source
+                    .ids
+                    .iter()
+                    .cloned()
+                    .zip(source.args.clone())
+                    .collect();
+                source
+                    .ids
+                    .retain(|id| self.execute.contains(&(root.clone(), id.clone())));
+                if !source.ids.is_empty() {
+                    source.args = source.ids.iter().map(|id| args[id].clone()).collect();
+                    execute_upstream(&source, self.stderr)?;
+                }
+                for id in ids {
+                    self.nodes
+                        .get_mut(&(root.clone(), id.clone()))
+                        .expect("discovered node")
+                        .hash = Some(hashes[&id].clone());
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -360,29 +681,126 @@ fn configured_selectors(project: &Project) -> Result<BTreeMap<String, String>> {
                 format!("{package}:{task}"),
             ))
         })
+        .chain(
+            project
+                .config
+                .sources
+                .values()
+                .flat_map(|source| &source.packages)
+                .flat_map(|(package, entry)| entry.content.keys().map(move |task| (package, task)))
+                .map(|(package, task)| {
+                    Ok((
+                        sources::config::content_env_name(package, task)?,
+                        format!("{package}:{task}"),
+                    ))
+                }),
+        )
         .collect()
 }
 
 pub(crate) fn task(project: &Project, selectors: &[String]) -> Result<i32> {
-    let mut groups = prepare(project, selectors)?;
-    // Validate every source's selected tasks before any task is allowed to run.
-    let mut resolver = Resolver::default();
-    for source in &mut groups {
-        resolver.resolve(source)?;
+    let groups = {
+        let _lock = crate::project_lock(&project.root, true)?;
+        prepare(project, selectors)?
+    };
+    let roots = groups
+        .iter()
+        .flat_map(|source| {
+            source
+                .ids
+                .iter()
+                .map(|id| Ok((std::fs::canonicalize(&source.checkout)?, id.clone())))
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    let mut graph = Graph::new(false);
+    graph.discover(roots.clone())?;
+    graph.execute.extend(roots);
+    graph.settle()?;
+    Ok(0)
+}
+
+fn ids_content(project: &Project, owner: &str, ids: &[String]) -> BTreeMap<String, ContentTask> {
+    ids.iter()
+        .filter_map(|id| {
+            let (package, task) = id.split_once('#').expect("prepared identity");
+            project.config.sources[owner].packages[package]
+                .content
+                .get(task)
+                .map(|content| (id.clone(), content.clone()))
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparationFailure(pub i32);
+
+impl std::fmt::Display for PreparationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "upstream Turbo failed with exit status {}", self.0)
     }
-    for source in &groups {
-        let mut command = command(&source.checkout)?;
-        command.arg("run").args(&source.args).envs(&source.env);
-        let status = crate::run::wait_command(&mut command, &source.name)?;
-        if let Err(error) = crate::run::warn_changes(&Git::at(&source.checkout), &source.name) {
-            eprintln!(
-                "warning: {}: cannot inspect source after command: {error:#}",
-                source.name
+}
+impl std::error::Error for PreparationFailure {}
+
+fn execute_upstream(source: &SourceTasks, stderr: bool) -> Result<()> {
+    let mut command = command(&source.checkout)?;
+    command.arg("run").args(&source.args).envs(&source.env);
+    if stderr {
+        command.stdout(std::io::stderr());
+    }
+    let status = crate::run::wait_command(&mut command, &source.name)?;
+    if let Err(error) = crate::run::warn_changes(&Git::at(&source.checkout), &source.name) {
+        eprintln!(
+            "warning: {}: cannot inspect source after command: {error:#}",
+            source.name
+        );
+    }
+    if !status.success() {
+        return Err(PreparationFailure(crate::run::exit_code(status)).into());
+    }
+    Ok(())
+}
+
+fn refresh_and_verify(
+    project: &Project,
+    groups: &[SourceTasks],
+    env: &BTreeMap<String, String>,
+    stderr: bool,
+) -> Result<()> {
+    let mut expected = Vec::new();
+    for source in groups {
+        for content in source.content.values() {
+            for artifact in &content.artifacts {
+                if let Some(installed) = &artifact.installed {
+                    expected.push((
+                        source.checkout.clone(),
+                        artifact.path.clone(),
+                        installed.clone(),
+                        crate::artifacts::snapshot(&source.checkout, &artifact.path)?,
+                    ));
+                }
+            }
+        }
+    }
+    if !expected.is_empty() {
+        crate::pnpm::refresh_frozen(project, env, stderr)?;
+    }
+    // Later upstream tasks or install lifecycles must not change an earlier
+    // snapshot, including paths consumed directly through checkout links.
+    for source in groups {
+        for (id, content) in &source.content {
+            ensure!(
+                crate::artifacts::digest(&source.checkout, content)? == source.digests[id],
+                "required artifacts for {id} changed during content preparation; stage deterministic, nonoverlapping outputs before retrying"
             );
         }
-        if !status.success() {
-            return Ok(crate::run::exit_code(status));
-        }
     }
-    Ok(0)
+    for (_, path, installed, before) in expected {
+        ensure!(
+            crate::artifacts::snapshot(&project.root, &installed)? == before,
+            "installed consumed artifact {} differs from prepared {}; fix the file-package reference, package files/exports or explicit staging task before retrying",
+            installed.display(),
+            path.display()
+        );
+    }
+    Ok(())
 }

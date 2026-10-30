@@ -370,3 +370,68 @@ pub fn download(project: &Project, packages: &[String]) -> Result<()> {
     );
     Ok(())
 }
+
+/// Refresh directory-file snapshots using this repository's package manager and
+/// lifecycle configuration. Frozen resolution never updates dependency selections.
+pub(crate) fn refresh_frozen(
+    project: &Project,
+    env: &BTreeMap<String, String>,
+    stderr: bool,
+) -> Result<()> {
+    let root = &project.root;
+    ordinary_file(&root.join("pnpm-lock.yaml"))?;
+    let manifest: Value = config::read_json(&root.join("package.json"))?;
+    let declared = manifest
+        .get("packageManager")
+        .and_then(Value::as_str)
+        .and_then(|value| value.strip_prefix("pnpm@"))
+        .context("content refresh requires a pinned pnpm packageManager in package.json")?;
+    let version = declared.split('+').next().unwrap_or(declared);
+    semver::Version::parse(version)
+        .context("content refresh requires an exact pnpm packageManager version")?;
+    let output = pnpm_command(root)
+        .arg("--version")
+        .output()
+        .context("cannot start the consuming repository's pnpm")?;
+    ensure!(
+        output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == version,
+        "content refresh requires the consuming repository's declared pnpm {version}; configure its package-manager dispatcher before retrying"
+    );
+    let mut command = pnpm_command(root);
+    clear_sources_env(&mut command);
+    command.envs(env);
+    if let Some(refresh) = &project.config.pnpm_refresh {
+        for filter in &refresh.filters {
+            command.arg(format!("--filter={filter}"));
+        }
+    }
+    command.args(["install", "--frozen-lockfile"]);
+    if stderr {
+        command.stdout(std::io::stderr());
+    }
+    let status = crate::run::wait_command(&mut command, "pnpm content refresh")?;
+    ensure!(
+        status.success(),
+        "pnpm content refresh failed ({status}); preserve the frozen lock and fix the declared dependencies or explicit staging tasks before retrying"
+    );
+    Ok(())
+}
+
+/// Managed values belong to one consuming checkout, including install lifecycles.
+pub(crate) fn clear_sources_env(command: &mut Command) {
+    // Only snapshots computed for this checkout may enter its Turbo environment.
+    // Ancestor hashes can describe another graph or an obsolete configuration.
+    for (key, _) in std::env::vars_os() {
+        let prefix = key.as_encoded_bytes().get(..b"SOURCES_".len());
+        let managed = prefix.is_some_and(|prefix| {
+            if cfg!(windows) {
+                prefix.eq_ignore_ascii_case(b"SOURCES_")
+            } else {
+                prefix == b"SOURCES_"
+            }
+        });
+        if managed {
+            command.env_remove(key);
+        }
+    }
+}

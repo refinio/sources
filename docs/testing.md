@@ -29,11 +29,14 @@ The suite deliberately retires exhaustive malformed-input, transport fallback, u
 | Run a child in the selected checkout with literal arguments, inherited I/O and its exit status | `tests/run.rs` |
 | Terminate a child process tree while retaining the project lock through shutdown | `tests/run.rs` |
 | Execute exact allowed package/task pairs and their Turbo prerequisites | `tests/turbo.rs` |
-| Run concurrent nested prerequisites from parent Turbo and serialize child execution | `tests/turbo_parent.rs` |
+| Use short metadata/refresh locks and allow concurrent independent native tasks | `tests/turbo_parent.rs` |
 | Propagate a leaf change through direct repository edges, hit cache unchanged and restore deleted outputs | `tests/turbo_transitive.rs` |
 | Resolve only consumed task hashes and preserve cache across unrelated task changes | `tests/turbo_transitive.rs` |
 | Build and restore a repository cycle with an acyclic foundation task graph | `tests/turbo_transitive.rs` |
 | Reject a genuine task-hash cycle before execution with an actionable task path | `tests/turbo_transitive.rs` |
+| Prepare content artifacts, refresh native file installations, preserve cache on identical bytes, reject stale/missing payloads and use pinned checkouts | `tests/turbo_content.rs` |
+| Prepare transitive content edges with child-owned wildcard env and reject genuine cycles and allow independent task return edges | `tests/turbo_transitive.rs` |
+| Respect parent filters/options, leave unrelated allowlisted tasks unavailable, and batch required owner closures | `tests/turbo_transitive.rs` |
 | Execute a single-package repository with colon-containing task names | `tests/turbo_single.rs` |
 | Use native Windows paths for recursive release and child execution | `tests/windows.rs`, Windows only |
 
@@ -41,7 +44,7 @@ Two `run.rs` test-harness entry points launch real fixture child processes. They
 
 ## Verification
 
-Use the pinned Turbo executable installed by CI. For example, after installing `turbo@2.7.6` into a task-owned tools directory on Linux:
+Use the pinned Turbo executable installed by CI. For example, after installing `turbo@2.8.0` into a task-owned tools directory on Linux:
 
 ```sh
 export SOURCES_TEST_TURBO=/path/to/tools/node_modules/turbo-linux-64/bin/turbo
@@ -50,6 +53,6 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-Use the matching native Turbo binary on macOS or Windows. The CLI stories also require Git, Node, Python 3 and pnpm 10.15.0. Fixtures isolate Git configuration and serve archives locally.
+Use the matching native Turbo binary on macOS or Windows. The maintained acceptance target is Turbo 2.8.0; runtime Turbo selection remains owned by each repository. The CLI stories also require Git, Node, Python 3 and pnpm 10.15.0. Fixtures isolate Git configuration and serve archives locally.
 
 Distribution has a separate user story: install a native archive and run the packaged CLI. Its existing release gates in `.github/scripts/` verify matching versions, archive checksums, package smoke behavior and generated installer success/failure. Run those when changing packaging or installers; Rust checks alone do not cover installer behavior. This reduction does not remove native publication gates.
