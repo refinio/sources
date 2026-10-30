@@ -396,11 +396,12 @@ fn inputs_for(project: &Project, names: &BTreeSet<String>) -> Result<Inputs> {
         .filter_map(|name| candidates.get(name).map(|selector| (name, selector)))
         .map(|(name, selector)| {
             let (root, id, content) = &selected[selector];
+            let (package, task) = id.split_once('#').expect("prepared identity");
             Ok((
                 name.clone(),
                 Input {
                     producer: (root.clone(), id.clone()),
-                    content: if name.ends_with("__CONTENT") {
+                    content: if name == &sources::config::content_env_name(package, task)? {
                         content.clone()
                     } else {
                         None

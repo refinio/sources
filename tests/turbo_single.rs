@@ -69,4 +69,58 @@ fn single_package_tasks_use_the_manifest_package_name_and_preserve_colons() {
         "pack-app"
     );
     assert!(!child.join("dist/unrequested.txt").exists());
+    // A task literally named content still has a native-hash input distinct from
+    // its optional CONTENT artifact input. Declaring the latter does not require it.
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(child.join("package.json")).unwrap()).unwrap();
+    manifest["scripts"]["content"] = serde_json::json!("node task.cjs content");
+    write_json(&child.join("package.json"), &manifest);
+    let mut turbo: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(child.join("turbo.json")).unwrap()).unwrap();
+    turbo["tasks"]["content"] = serde_json::json!({"outputs":["dist/content.txt"]});
+    write_json(&child.join("turbo.json"), &turbo);
+    f.configure(serde_json::json!({"shared":{"url":upstream,"packages":{
+        "@example/single":{"tasks":["content"],"content":{"content":{"artifacts":[{"path":"deliberately-missing-content"}]}}}
+    }}}), serde_json::json!({"shared":child}));
+    write_json(
+        &f.app.join("package.json"),
+        &serde_json::json!({"name":"parent-single","packageManager":"pnpm@10.15.0","scripts":{"inspect":"node inspect.cjs"}}),
+    );
+    write_json(
+        &f.app.join("turbo.json"),
+        &serde_json::json!({"tasks":{"inspect":{"cache":false,"env":["SOURCES_EXAMPLE_SINGLE__CONTENT"]}}}),
+    );
+    std::fs::write(f.app.join("inspect.cjs"), "require('node:fs').writeFileSync('observed-content-hash.txt',process.env.SOURCES_EXAMPLE_SINGLE__CONTENT);\n").unwrap();
+    success(
+        pnpm(&f, &f.app)
+            .args(["install", "--offline", "--ignore-scripts"])
+            .output()
+            .unwrap(),
+    );
+    install_turbo(&f.app);
+    f.git(&f.app, &["init"]);
+    f.git(&f.app, &["add", "."]);
+    f.git(&f.app, &["commit", "-qm", "Native content task input"]);
+    let expected = success(
+        pnpm(&f, &child)
+            .args(["exec", "turbo", "run", "content", "--dry=json"])
+            .output()
+            .unwrap(),
+    );
+    let expected: serde_json::Value = serde_json::from_slice(&expected.stdout).unwrap();
+    success(
+        f.cli()
+            .env("CI", "true")
+            .args(["turbo", "run", "inspect"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.app.join("observed-content-hash.txt")).unwrap(),
+        expected["tasks"][0]["hash"].as_str().unwrap()
+    );
+    assert!(
+        !child.join("dist/content.txt").exists(),
+        "hash-only input must not execute the producer or require its artifact contract"
+    );
 }
