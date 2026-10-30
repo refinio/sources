@@ -43,7 +43,7 @@ Two `run.rs` test-harness entry points launch real fixture child processes. They
 
 ## Verification
 
-Use the pinned Turbo executable installed by CI. For example, after installing `turbo@2.7.6` into a task-owned tools directory on Linux:
+Use the pinned Turbo executable installed by CI. For example, after installing `turbo@2.8.0` into a task-owned tools directory on Linux:
 
 ```sh
 export SOURCES_TEST_TURBO=/path/to/tools/node_modules/turbo-linux-64/bin/turbo
@@ -52,6 +52,6 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-Use the matching native Turbo binary on macOS or Windows. The fixture helper also accepts Turbo 2.8.0 for consumer-version validation; runtime Turbo selection remains owned by each repository. The CLI stories also require Git, Node, Python 3 and pnpm 10.15.0. Fixtures isolate Git configuration and serve archives locally.
+Use the matching native Turbo binary on macOS or Windows. The maintained acceptance target is Turbo 2.8.0; runtime Turbo selection remains owned by each repository. The CLI stories also require Git, Node, Python 3 and pnpm 10.15.0. Fixtures isolate Git configuration and serve archives locally.
 
 Distribution has a separate user story: install a native archive and run the packaged CLI. Its existing release gates in `.github/scripts/` verify matching versions, archive checksums, package smoke behavior and generated installer success/failure. Run those when changing packaging or installers; Rust checks alone do not cover installer behavior. This reduction does not remove native publication gates.

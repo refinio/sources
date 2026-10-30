@@ -324,10 +324,12 @@ For `sources turbo`, Sources now performs these steps for configured content tas
    their combined environment. Collect final native hashes only after that shared
    refresh, so a lifecycle generator cannot erase an earlier task's inputs by
    seeing only a later task's partial environment. Memoized tasks retain their own
-   consumed edges, preserving task-level cycle handling. If a later stage changes
-   a previously resolved task's native inputs, fail even if the task was only
-   queried for its hash. Require explicit staging rather than accepting a snapshot
-   for a different task state.
+   consumed edges, preserving task-level cycle handling. If a selected task's hash
+   was already resolved and the shared refresh changes it, fail and require a new
+   invocation rather than replacing a snapshot already used by another consumer.
+   Sources does not monitor lifecycle mutations of unselected task inputs. Keep
+   lifecycle generation and explicit staging consistent with the selected contract;
+   after editing those inputs or selections, rerun the complete command.
    This opt-in refresh is independent of the selection-time install skip logic.
 5. Compare installed consumed trees with the prepared upstream trees, including
    relative file names, file bytes and Unix executable bits. Recheck upstream bytes
@@ -349,9 +351,12 @@ hash. For content-based reuse, downstream `env` should select only the
 explicitly excludes the task-hash variable. Keeping the original task hash as an
 additional hashed input deliberately retains source-derived invalidation.
 
-No deferred Turbo hashing is required. The supported baseline Turbo 2.7.6 and
-consumer Turbo 2.8.0 both prepare before the downstream invocation. Sources does
-not claim to accelerate real consumers based on the disposable fixture results.
+Pin consuming repositories to Turbo 2.8.0 for this content workflow. Preparation
+happens before downstream invocation and requires no deferred Turbo hashing.
+Sources uses each repository's locally installed Turbo and does not install or
+upgrade it. The maintained acceptance workflow pins Turbo 2.8.0 and pnpm 10.15.0;
+older-version compatibility is outside this feature's scope. Sources does not
+claim to accelerate real consumers based on the disposable fixture results.
 
 `sources task` retains its direct execution contract, including exact pair
 validation before execution and its caller lock. It prevalidates every direct selected executable task before recursive resolution

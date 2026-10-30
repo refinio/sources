@@ -53,7 +53,7 @@ jobs:
         run: npm install --global pnpm@10.15.0
       - name: Install pinned Turbo for acceptance fixtures
         run: |
-          npm install --prefix "$RUNNER_TEMP/sources-turbo-tools" --no-audit --no-fund turbo@2.7.6
+          npm install --prefix "$RUNNER_TEMP/sources-turbo-tools" --no-audit --no-fund turbo@2.8.0
           node - "$RUNNER_TEMP/sources-turbo-tools" >> "$GITHUB_ENV" <<'JS'
           const path = require('node:path');
           const os = { linux: 'linux', darwin: 'darwin', win32: 'windows' }[process.platform];
