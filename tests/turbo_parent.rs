@@ -65,6 +65,34 @@ mod nested {
     fn parent_turbo_uses_phase_locks_and_allows_concurrent_independent_tasks() {
         let t = TurboFixture::new();
         t.parent();
+        // A parent invocation waits for another metadata/refresh phase instead
+        // of failing before it reaches the phase-local blocking locks.
+        let phase = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(t.f.app.join(".sources/project.lock"))
+            .unwrap();
+        phase.lock().unwrap();
+        let mut probe = Running(Some(
+            t.cli()
+                .args(["turbo", "--help"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        let mut stderr = BufReader::new(probe.0.as_mut().unwrap().stderr.take().unwrap());
+        let mut waiting = String::new();
+        stderr.read_line(&mut waiting).unwrap();
+        assert!(
+            waiting.contains("waiting for project lock"),
+            "parent must wait for a busy phase: {waiting}"
+        );
+        drop(phase);
+        let mut child = probe.0.take().unwrap();
+        child.stderr = Some(stderr.into_inner());
+        success(child.wait_with_output().unwrap());
+
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let binary =
             serde_json::to_string(assert_cmd::cargo::cargo_bin!("sources").to_str().unwrap())

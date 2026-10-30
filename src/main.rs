@@ -160,8 +160,11 @@ fn execute(cli: Cli) -> Result<i32> {
         None if matches!(cli.command, Commands::Setup) => std::fs::canonicalize(start)?,
         None => anyhow::bail!("no {CONFIG} found; run sources setup in the project root"),
     };
-    let lock = project_lock(&root, matches!(cli.command, Commands::Task { .. }))
-        .context("cannot acquire project lock")?;
+    let lock = project_lock(
+        &root,
+        matches!(cli.command, Commands::Task { .. } | Commands::Turbo { .. }),
+    )
+    .context("cannot acquire project lock")?;
     match cli.command {
         Commands::Setup => config::setup(root)?,
         Commands::Check => {
