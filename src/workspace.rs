@@ -233,6 +233,16 @@ pub fn release(project: &Project, clean: bool, offline: bool, registry: bool) ->
         })?;
         revisions.insert(name.clone(), revision);
     }
+    sources::release_graph::validate(
+        project,
+        &revisions,
+        if offline {
+            Acquisition::Offline
+        } else {
+            Acquisition::EnsureCached
+        },
+        registry,
+    )?;
     let mut targets = BTreeMap::new();
     for (name, revision) in &revisions {
         let path = project.managed(name);
