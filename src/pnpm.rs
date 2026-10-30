@@ -373,7 +373,7 @@ pub fn download(project: &Project, packages: &[String]) -> Result<()> {
 
 /// Refresh directory-file snapshots using this repository's package manager and
 /// lifecycle configuration. Frozen resolution never updates dependency selections.
-pub(crate) fn refresh_frozen(project: &Project) -> Result<()> {
+pub(crate) fn refresh_frozen(project: &Project, env: &BTreeMap<String, String>) -> Result<()> {
     let root = &project.root;
     ordinary_file(&root.join("pnpm-lock.yaml"))?;
     let manifest: Value = config::read_json(&root.join("package.json"))?;
@@ -394,6 +394,8 @@ pub(crate) fn refresh_frozen(project: &Project) -> Result<()> {
         "content refresh requires the consuming repository's declared pnpm {version}; configure its package-manager dispatcher before retrying"
     );
     let mut command = pnpm_command(root);
+    clear_sources_env(&mut command);
+    command.envs(env);
     if let Some(refresh) = &project.config.pnpm_refresh {
         for filter in &refresh.filters {
             command.arg(format!("--filter={filter}"));
@@ -406,4 +408,23 @@ pub(crate) fn refresh_frozen(project: &Project) -> Result<()> {
         "pnpm content refresh failed ({status}); preserve the frozen lock and fix the declared dependencies or explicit staging tasks before retrying"
     );
     Ok(())
+}
+
+/// Managed values belong to one consuming checkout, including install lifecycles.
+pub(crate) fn clear_sources_env(command: &mut Command) {
+    // Only snapshots computed for this checkout may enter its Turbo environment.
+    // Ancestor hashes can describe another graph or an obsolete configuration.
+    for (key, _) in std::env::vars_os() {
+        let prefix = key.as_encoded_bytes().get(..b"SOURCES_".len());
+        let managed = prefix.is_some_and(|prefix| {
+            if cfg!(windows) {
+                prefix.eq_ignore_ascii_case(b"SOURCES_")
+            } else {
+                prefix == b"SOURCES_"
+            }
+        });
+        if managed {
+            command.env_remove(key);
+        }
+    }
 }

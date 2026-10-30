@@ -310,6 +310,8 @@ For `sources turbo`, Sources now performs these steps for configured content tas
    an existing ordinary `pnpm-lock.yaml` and an exact `packageManager: pnpm@<version>`
    in its root manifest. The pnpm dispatcher must report that declared version.
    Use the owner's normal registry, store, workspace, and lifecycle configuration.
+   Install lifecycles receive this consuming checkout's fresh managed snapshot;
+   remove inherited stale/ancestor `SOURCES_*` values just as for native Turbo.
    Do not add `--ignore-scripts`, `--force`, update flags, or disable lifecycle scripts.
    Frozen resolution preserves recorded versions and fails on lock/manifest drift.
    By default installation covers the normal workspace. An optional root

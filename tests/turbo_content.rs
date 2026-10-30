@@ -63,6 +63,13 @@ if (value !== 'missing') {
             .unwrap(),
     );
     turbo_fixture::install_turbo(&t.f.app);
+    edit(&t.f.app.join("package.json"), |v| {
+        v["scripts"] = json!({"postinstall":"node refresh.cjs"});
+    });
+    std::fs::write(t.f.app.join("refresh.cjs"), r#"
+const fs = require('node:fs');
+fs.writeFileSync('refresh-env.json', JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([key])=>key.startsWith('SOURCES_')))));
+"#).unwrap();
     let lock = std::fs::read(t.f.app.join("pnpm-lock.yaml")).unwrap();
     std::fs::remove_dir_all(t.child.join(".turbo")).unwrap();
     edit(&t.f.app.join(".sources.conf"), |v| {
@@ -99,6 +106,8 @@ fs.appendFileSync('../../executions.log', 'run\n');
         let start = Instant::now();
         let output = success(
             t.cli()
+                .env("SOURCES_STALE__PACK", "obsolete")
+                .env("SOURCES_EXAMPLE_PROTOCOL__PACK__CONTENT", "forged")
                 .args([
                     "turbo",
                     "run",
@@ -108,6 +117,20 @@ fs.appendFileSync('../../executions.log', 'run\n');
                 ])
                 .output()
                 .unwrap(),
+        );
+        let refresh_env: Value =
+            serde_json::from_slice(&std::fs::read(t.f.app.join("refresh-env.json")).unwrap())
+                .unwrap();
+        assert!(
+            refresh_env.get("SOURCES_STALE__PACK").is_none(),
+            "{refresh_env}"
+        );
+        assert!(
+            refresh_env["SOURCES_EXAMPLE_PROTOCOL__PACK__CONTENT"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:"),
+            "{refresh_env}"
         );
         let text = String::from_utf8_lossy(&output.stdout);
         let summary_path = std::fs::read_dir(&runs)
@@ -235,7 +258,7 @@ fs.renameSync(path + '.new', path);
         executions
     );
     edit(&t.f.app.join("package.json"), |v| {
-        v.as_object_mut().unwrap().remove("scripts");
+        v["scripts"] = json!({"postinstall":"node refresh.cjs"});
     });
 
     // Frozen refresh cannot choose new dependency versions or rewrite the lock.

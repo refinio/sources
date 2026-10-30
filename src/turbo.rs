@@ -65,21 +65,7 @@ fn command(root: &Path) -> Result<Command> {
     );
     let mut command = crate::pnpm::pnpm_command(root);
     command.args(["exec", "turbo"]);
-    // Only snapshots computed for this checkout may enter its Turbo environment.
-    // Ancestor hashes can describe another graph or an obsolete configuration.
-    for (key, _) in std::env::vars_os() {
-        let prefix = key.as_encoded_bytes().get(..b"SOURCES_".len());
-        let managed = prefix.is_some_and(|prefix| {
-            if cfg!(windows) {
-                prefix.eq_ignore_ascii_case(b"SOURCES_")
-            } else {
-                prefix == b"SOURCES_"
-            }
-        });
-        if managed {
-            command.env_remove(key);
-        }
-    }
+    crate::pnpm::clear_sources_env(&mut command);
     Ok(command)
 }
 
@@ -99,10 +85,12 @@ pub(crate) fn prepare_parent(project: &Project, arguments: &[OsString]) -> Resul
         .collect::<Vec<_>>();
     let mut groups = prepare(project, &selectors)?;
     let mut resolver = Resolver::new(project)?;
+    let mut env = BTreeMap::new();
     for source in &mut groups {
-        parent.envs(resolver.resolve(source)?);
+        env.extend(resolver.resolve(source)?);
     }
-    refresh_and_verify(project, &groups)?;
+    refresh_and_verify(project, &groups, &env)?;
+    parent.envs(env);
     parent.args(arguments);
     Ok(parent)
 }
@@ -349,7 +337,7 @@ impl Resolver {
                         checkout.display()
                     );
                     let _lock = crate::project_lock(&child.root, false)?;
-                    refresh_and_verify(&child, &dependencies)?;
+                    refresh_and_verify(&child, &dependencies, &selected.env)?;
                 }
                 // Use exactly this snapshot in both the real query and execution.
                 let mut selected_hashes = query(&mut selected)?.0;
@@ -492,7 +480,11 @@ fn execute_upstream(source: &SourceTasks) -> Result<()> {
     Ok(())
 }
 
-fn refresh_and_verify(project: &Project, groups: &[SourceTasks]) -> Result<()> {
+fn refresh_and_verify(
+    project: &Project,
+    groups: &[SourceTasks],
+    env: &BTreeMap<String, String>,
+) -> Result<()> {
     let mut expected = Vec::new();
     for source in groups {
         for content in source.content.values() {
@@ -509,7 +501,7 @@ fn refresh_and_verify(project: &Project, groups: &[SourceTasks]) -> Result<()> {
         }
     }
     if !expected.is_empty() {
-        crate::pnpm::refresh_frozen(project)?;
+        crate::pnpm::refresh_frozen(project, env)?;
     }
     // Later upstream tasks or install lifecycles must not change an earlier
     // snapshot, including paths consumed directly through checkout links.
