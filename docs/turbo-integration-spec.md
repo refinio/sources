@@ -320,6 +320,13 @@ For `sources turbo`, Sources now performs these steps for configured content tas
    `--filter=<selector>` arguments. Include its tooling root and every consumed
    importer that needs installation. Sources does not invent or widen selectors;
    installed-artifact verification rejects incomplete refreshes.
+   Resolve all selected tasks' consumed edges before refreshing a checkout with
+   their combined environment. Collect final native hashes only after that shared
+   refresh, so a lifecycle generator cannot erase an earlier task's inputs by
+   seeing only a later task's partial environment. Memoized tasks retain their own
+   consumed edges, preserving task-level cycle handling. If a later stage changes
+   an already prepared task's native inputs, fail and require explicit staging
+   rather than accepting a snapshot for a different task state.
    This opt-in refresh is independent of the selection-time install skip logic.
 5. Compare installed consumed trees with the prepared upstream trees, including
    relative file names, file bytes and Unix executable bits. Recheck upstream bytes

@@ -228,8 +228,8 @@ fn query(source: &mut SourceTasks) -> Result<(BTreeMap<String, String>, Metadata
     Ok((hashes, metadata))
 }
 
-// Resolve one selected task at a time. Repository-level recursion would reject
-// valid graphs that return to a different, independent task in the same checkout.
+// Discover task edges independently, then refresh/hash/execute each selected
+// group with its combined environment. Cycle identity remains checkout + task.
 #[derive(Default)]
 struct Resolver {
     visiting: Vec<(PathBuf, String)>,
@@ -273,9 +273,8 @@ impl Resolver {
             "cannot prepare content task in ancestor {} holding the caller lock; stage it before invoking Sources",
             checkout.display()
         );
-        // Plain Turbo children cannot introduce source hash edges. Query their
-        // uncached tasks together, then reuse them across all consuming graphs.
-        if !source.checkout.join(sources::config::CONFIG).is_file() {
+        let configured = source.checkout.join(sources::config::CONFIG).is_file();
+        if !configured {
             let mut pending = source.clone();
             pending
                 .ids
@@ -285,9 +284,26 @@ impl Resolver {
                 self.remember_plain(&pending, &hashes)?;
             }
         }
-        let mut hashes = BTreeMap::new();
-        let mut args = Vec::new();
-        for id in source.ids.clone() {
+        let child = if configured {
+            let child = Project::load(source.checkout.clone())?;
+            sources::config::real_directory_if_present(&child.internal())?;
+            std::fs::create_dir_all(child.internal())?;
+            child.validate()?;
+            Some(child)
+        } else {
+            None
+        };
+        let candidates = child
+            .as_ref()
+            .map(configured_selectors)
+            .transpose()?
+            .unwrap_or_default();
+        let mut ready = BTreeMap::new();
+        let mut pending = false;
+        // Discover dependencies task by task, keeping cycle identity at task level.
+        // Do not mark every task in the group as visiting: an independent task in
+        // this checkout may legitimately be needed through another repository.
+        for id in &source.ids {
             let key = (checkout.clone(), id.clone());
             if let Some(start) = self.visiting.iter().position(|entry| entry == &key) {
                 let path = self.visiting[start..]
@@ -300,88 +316,150 @@ impl Resolver {
                     "Turbo source task hash cycle: {path}; remove a cyclic SOURCES_* task env dependency in turbo.json"
                 );
             }
-            if !self.resolved.contains_key(&key) {
-                self.visiting.push(key.clone());
-                let mut selected = source.clone();
-                selected.ids = vec![id.clone()];
-                selected.env.clear();
-                let child = Project::load(selected.checkout.clone())?;
-                sources::config::real_directory_if_present(&child.internal())?;
-                std::fs::create_dir_all(child.internal())?;
-                child.validate()?;
-                // Supply candidate names only to the discovery query. Turbo expands
-                // env wildcards/exclusions for its selected and transitive tasks.
-                // These placeholder values never reach execution or exported hashes.
-                let candidates = configured_selectors(&child)?;
-                selected.env = candidates
-                    .keys()
-                    .map(|name| (name.clone(), String::new()))
-                    .collect();
-                let (_, metadata) = query(&mut selected)?;
-                let consumed: BTreeSet<_> = metadata
-                    .global_cache_inputs
-                    .environment_variables
-                    .configured
-                    .iter()
-                    .chain(
-                        metadata
-                            .tasks
-                            .iter()
-                            .flat_map(|task| &task.environment_variables.configured),
-                    )
-                    .filter_map(|value| value.split_once('=').map(|(name, _)| name.to_owned()))
-                    .collect();
-                selected.env.clear();
-                let selectors = candidates
-                    .into_iter()
-                    .filter(|(name, _)| consumed.contains(name))
-                    .map(|(_, selector)| selector)
-                    .collect::<Vec<_>>();
-                let mut dependencies = Vec::new();
-                for mut dependency in prepare(&child, &selectors)? {
-                    selected.env.extend(self.resolve(&mut dependency)?);
-                    dependencies.push(dependency);
-                }
-                if dependencies.iter().any(|source| !source.content.is_empty()) {
-                    ensure!(
-                        checkout != self.caller,
-                        "cannot prepare content in ancestor {} holding the caller lock; stage that task before invoking Sources",
-                        checkout.display()
-                    );
-                    let _lock = crate::project_lock(&child.root, false)?;
-                    refresh_and_verify(&child, &dependencies, &selected.env)?;
-                }
-                // Use exactly this snapshot in both the real query and execution.
-                let mut selected_hashes = query(&mut selected)?.0;
-                let hash = selected_hashes
-                    .remove(&id)
-                    .expect("validated selected hash");
-                self.resolved.insert(key.clone(), (selected, hash));
-                self.visiting.pop();
+            if let Some((selected, _)) = self.resolved.get(&key) {
+                ready.insert(id.clone(), selected.clone());
+                continue;
             }
-            let (selected, hash) = &self.resolved[&key];
+            pending = true;
+            self.visiting.push(key);
+            let mut selected = source.clone();
+            selected.ids = vec![id.clone()];
+            // Let native Turbo expand wildcards/exclusions for this exact task
+            // and its prerequisites. Placeholders never reach execution.
+            selected.env = candidates
+                .keys()
+                .map(|name| (name.clone(), String::new()))
+                .collect();
+            let (_, metadata) = query(&mut selected)?;
+            let consumed: BTreeSet<_> = metadata
+                .global_cache_inputs
+                .environment_variables
+                .configured
+                .iter()
+                .chain(
+                    metadata
+                        .tasks
+                        .iter()
+                        .flat_map(|task| &task.environment_variables.configured),
+                )
+                .filter_map(|value| value.split_once('=').map(|(name, _)| name.to_owned()))
+                .collect();
+            selected.env.clear();
+            let selectors = candidates
+                .iter()
+                .filter(|(name, _)| consumed.contains(*name))
+                .map(|(_, selector)| selector.clone())
+                .collect::<Vec<_>>();
+            for mut dependency in prepare(
+                child.as_ref().expect("configured pending child"),
+                &selectors,
+            )? {
+                selected.env.extend(self.resolve(&mut dependency)?);
+            }
+            self.visiting.pop();
+            ready.insert(id.clone(), selected);
+        }
+        if pending {
+            let child = child.as_ref().expect("configured pending child");
+            let mut combined: BTreeMap<_, _> = ready
+                .values()
+                .flat_map(|selected| selected.env.clone())
+                .collect();
+            // Include cached tasks' dependencies too: an install must verify all
+            // payloads consumed by the selected group, not only newly found edges.
+            let selectors = candidates
+                .iter()
+                .filter(|(name, _)| combined.contains_key(*name))
+                .map(|(_, selector)| selector.clone())
+                .collect::<Vec<_>>();
+            let mut dependencies = prepare(child, &selectors)?;
+            for dependency in &mut dependencies {
+                combined.extend(self.resolve(dependency)?);
+            }
+            if dependencies
+                .iter()
+                .any(|dependency| !dependency.content.is_empty())
+            {
+                ensure!(
+                    checkout != self.caller,
+                    "cannot prepare content in ancestor {} holding the caller lock; stage that task before invoking Sources",
+                    checkout.display()
+                );
+                let _lock = crate::project_lock(&child.root, false)?;
+                refresh_and_verify(child, &dependencies, &combined)?;
+            }
+            // One refresh with the complete group snapshot precedes all final
+            // hashes. A shared lifecycle generator can now prepare every input.
+            let mut snapshot = source.clone();
+            snapshot.env = combined.clone();
+            let (hashes, _) = query(&mut snapshot)?;
+            for (id, arg) in snapshot.ids.iter().zip(&snapshot.args) {
+                let key = (checkout.clone(), id.clone());
+                if self.executed.contains(&key) {
+                    ensure!(
+                        self.resolved[&key].1 == hashes[id],
+                        "prepared task {id} inputs changed during grouped refresh; stage nonoverlapping inputs before retrying"
+                    );
+                }
+                let mut selected = ready.remove(id).expect("discovered selected task");
+                selected.args = vec![arg.clone()];
+                // Retain only this task's consumed edges in the memo. Returning
+                // to this task must not invent dependencies on unrelated tasks.
+                for (name, value) in &mut selected.env {
+                    *value = combined[name].clone();
+                }
+                self.resolved.insert(key, (selected, hashes[id].clone()));
+            }
+        }
+        source.env.clear();
+        source.args.clear();
+        for id in &source.ids {
+            let (selected, _) = &self.resolved[&(checkout.clone(), id.clone())];
             source.env.extend(selected.env.clone());
-            args.extend(selected.args.clone());
+            source.args.extend(selected.args.clone());
+        }
+        let mut execution = source.clone();
+        execution.ids = source
+            .ids
+            .iter()
+            .filter(|id| {
+                source.content.contains_key(*id)
+                    && !self.executed.contains(&(checkout.clone(), (*id).clone()))
+            })
+            .cloned()
+            .collect();
+        if !execution.ids.is_empty() {
+            execution.args = execution
+                .ids
+                .iter()
+                .flat_map(|id| {
+                    self.resolved[&(checkout.clone(), id.clone())]
+                        .0
+                        .args
+                        .clone()
+                })
+                .collect();
+            execute_upstream(&execution)?;
+            self.executed.extend(
+                execution
+                    .ids
+                    .iter()
+                    .map(|id| (checkout.clone(), id.clone())),
+            );
+        }
+        let mut hashes = BTreeMap::new();
+        for id in &source.ids {
             let (package, task) = id.split_once('#').expect("prepared identity");
             hashes.insert(
                 sources::config::turbo_env_name(package, task)?,
-                hash.clone(),
+                self.resolved[&(checkout.clone(), id.clone())].1.clone(),
             );
-            if let Some(content) = source.content.get(&id) {
-                ensure!(
-                    checkout != self.caller,
-                    "cannot prepare content task {id} in ancestor {} holding the caller lock; stage it before invoking Sources",
-                    checkout.display()
-                );
-                if self.executed.insert(key.clone()) {
-                    execute_upstream(selected)?;
-                }
+            if let Some(content) = source.content.get(id) {
                 let digest = crate::artifacts::digest(&source.checkout, content)?;
                 source.digests.insert(id.clone(), digest.clone());
                 hashes.insert(sources::config::content_env_name(package, task)?, digest);
             }
         }
-        source.args = args;
         Ok(hashes)
     }
 }

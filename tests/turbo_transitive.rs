@@ -459,3 +459,130 @@ fn content_edges_prepare_transitively_and_keep_child_owned_wildcard_env() {
         before
     );
 }
+
+#[test]
+fn content_group_refresh_preserves_inputs_generated_for_all_selected_tasks() {
+    let t = Chain::new();
+    edit_json(&t.leaf.join("packages/pkg/package.json"), |manifest| {
+        manifest["scripts"]["other"] = json!("node ../../other.cjs");
+    });
+    edit_json(&t.leaf.join("turbo.json"), |config| {
+        config["tasks"]["other"] = json!({"inputs":["other.txt"],"outputs":["other/**"]});
+    });
+    std::fs::write(t.leaf.join("packages/pkg/other.txt"), "delta\n").unwrap();
+    std::fs::write(
+        t.leaf.join("other.cjs"),
+        r#"
+const fs = require('node:fs');
+fs.mkdirSync('other', {recursive:true});
+fs.writeFileSync('other/result.json', JSON.stringify({value:fs.readFileSync('other.txt','utf8')}));
+"#,
+    )
+    .unwrap();
+    connect(&t.f, &t.middle, &t.leaf, "leaf", &["build", "other"]);
+    success(
+        t.f.cli()
+            .current_dir(&t.middle)
+            .env("CI", "true")
+            .args(["task", "leaf:build", "leaf:other"])
+            .output()
+            .unwrap(),
+    );
+    edit_json(&t.middle.join("package.json"), |manifest| {
+        manifest["dependencies"] = json!({"leaf":"file:./sources/leaf/packages/pkg"});
+        manifest["scripts"] = json!({"postinstall":"node generate.cjs"});
+    });
+    // One ordinary native lifecycle generates inputs for both tasks. Each input
+    // depends on its own upstream content key; neither may disappear on refresh.
+    std::fs::write(t.middle.join("generate.cjs"), r#"
+const fs = require('node:fs');
+fs.mkdirSync('generated', {recursive:true});
+for (const [task, directory] of [['build','dist'],['other','other']]) {
+  const key = 'SOURCES_LEAF__' + task.toUpperCase() + '__CONTENT';
+  const value = process.env[key] ? JSON.parse(fs.readFileSync('node_modules/leaf/'+directory+'/result.json')).value : 'missing';
+  fs.writeFileSync('generated/'+task+'.json', JSON.stringify({value}));
+}
+"#).unwrap();
+    edit_json(&t.middle.join("packages/pkg/package.json"), |manifest| {
+        manifest["scripts"] =
+            json!({"build":"node ../../consume.cjs build","other":"node ../../consume.cjs other"});
+    });
+    std::fs::write(
+        t.middle.join("consume.cjs"),
+        r#"
+const fs = require('node:fs');
+const task = process.argv[2];
+fs.mkdirSync('dist', {recursive:true});
+fs.copyFileSync('../../generated/'+task+'.json', 'dist/'+task+'.json');
+fs.appendFileSync('../../group-executions.log', task+'\n');
+"#,
+    )
+    .unwrap();
+    edit_json(&t.middle.join("turbo.json"), |config| {
+        for task in ["build", "other"] {
+            config["tasks"][task] = json!({
+                "inputs":[format!("../../generated/{task}.json")],
+                "env":[format!("SOURCES_LEAF__{}__CONTENT",task.to_uppercase())],
+                "outputs":[format!("dist/{task}.json")]
+            });
+        }
+    });
+    success(
+        pnpm(&t.f, &t.middle)
+            .args(["install", "--offline"])
+            .output()
+            .unwrap(),
+    );
+    install_turbo(&t.middle);
+    let lock = std::fs::read(t.middle.join("pnpm-lock.yaml")).unwrap();
+    edit_json(&t.middle.join(".sources.conf"), |config| {
+        for (task, directory) in [("build", "dist"), ("other", "other")] {
+            config["sources"]["leaf"]["packages"]["leaf"]["content"][task] = json!({
+                "artifacts":[{"path":format!("packages/pkg/{directory}"),"installed":format!("node_modules/leaf/{directory}")}]
+            });
+        }
+    });
+    connect(&t.f, &t.app, &t.middle, "middle", &["build", "other"]);
+    let run = || {
+        success(
+            t.f.cli()
+                .current_dir(&t.app)
+                .env("CI", "true")
+                .env("TURBO_TELEMETRY_DISABLED", "1")
+                .args(["task", "middle:build", "middle:other"])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(
+            std::fs::read(t.middle.join("pnpm-lock.yaml")).unwrap(),
+            lock
+        );
+        for (task, expected) in [
+            (
+                "build",
+                std::fs::read_to_string(t.leaf.join("packages/pkg/input.txt")).unwrap(),
+            ),
+            ("other", "delta\n".to_owned()),
+        ] {
+            let path = t.middle.join(format!("packages/pkg/dist/{task}.json"));
+            let actual: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(
+                actual["value"], expected,
+                "{task} must consume freshly generated input from the combined snapshot"
+            );
+        }
+    };
+    run();
+    run();
+    std::fs::write(t.leaf.join("packages/pkg/input.txt"), "beta\n").unwrap();
+    run();
+    let executions = std::fs::read_to_string(t.middle.join("group-executions.log")).unwrap();
+    assert_eq!(
+        executions.lines().filter(|line| *line == "build").count(),
+        2
+    );
+    assert_eq!(
+        executions.lines().filter(|line| *line == "other").count(),
+        1
+    );
+}
