@@ -288,6 +288,8 @@ fs.renameSync(path + '.new', path);
     edit(&t.f.app.join(".sources.conf"), |v| {
         v["pnpm_refresh"] = json!({"filters":["parent-fixture"]});
     });
+    let development = run("development recovery before pin", "cache miss");
+    assert_eq!(development["value"], json!(["beta"]));
     // The same stable Sources path and native directory-file installation also
     // work after selecting a pinned, independently bootstrapped managed clone.
     t.f.git(&t.child, &["add", "."]);
@@ -313,10 +315,7 @@ fs.renameSync(path + '.new', path);
         std::fs::canonicalize(t.f.app.join("sources/shared")).unwrap(),
         std::fs::canonicalize(&managed).unwrap()
     );
-    assert_eq!(
-        run("pinned checkout refresh", "cache miss")["value"],
-        json!(["beta"])
-    );
+    assert_eq!(run("pinned checkout refresh", "cache hit"), development);
     assert_eq!(
         run("pinned no change", "cache hit")["value"],
         json!(["beta"])
