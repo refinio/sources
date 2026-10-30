@@ -20,7 +20,7 @@ The suite deliberately retires exhaustive malformed-input, transport fallback, u
 | Capture development heads, switch to pinned Git inputs, reject conflicting transitive/root repository revisions, align pins, and return to development | `tests/release.rs` |
 | Discard disposable managed changes while preserving external development files | `tests/release.rs` |
 | Reuse cached inputs offline and recover a failed clean release | `tests/release.rs` |
-| Activate and update recorded recursive submodule pins | `tests/activation.rs` |
+| Activate and update recorded recursive submodule pins, rejecting conflicts with Sources pins | `tests/activation.rs` |
 | Capture exact upstream release tags without changing development checkouts, and preserve pins on failure | `tests/pins.rs` |
 | Fetch a shallow complete revision and inspect cached readiness offline | `tests/network.rs` |
 | Inspect active/dirty/broken links and receive repair guidance | `tests/status.rs` |

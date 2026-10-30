@@ -83,6 +83,17 @@ impl Graph {
     }
 
     fn walk(&mut self, gitdir: &Path, revision: &Revision, owner: &Path, path: &str) -> Result<()> {
+        for module in &revision.modules {
+            let module_path = format!("{path} -> submodule {}", module.path.display());
+            if self.enter(&module.url, &module.revision.commit, &module_path)? {
+                self.walk(
+                    &gitdir.join("modules").join(&module.name),
+                    &module.revision,
+                    &owner.join(&module.path),
+                    &module_path,
+                )?;
+            }
+        }
         let Some(bytes) = file(gitdir, &revision.commit, CONFIG)? else {
             return Ok(());
         };

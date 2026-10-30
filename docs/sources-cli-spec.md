@@ -54,7 +54,7 @@ Exit with 0 on success, 1 for operational or validation failure, and 2 for inval
 - Link objects directly inside the configured workspace link directory are managed and replaceable. Their targets remain outside that ownership grant.
 - Managed clones obtain source objects from their configured upstreams. Locally cached commits are sufficient evidence for pin availability; there is no independent proof of current remote availability.
 - Managed activation includes recursive submodules at the commits recorded by their containing repositories.
-- Release and release readiness require one Git commit per normalized repository identity throughout the pinned Sources dependency graph. Repeated identical pins are allowed; conflicting pins fail before activation.
+- Release and release readiness require one Git commit per normalized repository identity throughout the pinned Sources dependency graph and its recursive submodules. Repeated identical pins are allowed; conflicting pins fail before activation.
 - Network access follows the command policy below. Read-only local inspection does not fetch implicitly.
 
 ## Configuration files
@@ -282,7 +282,8 @@ This command does not require a complete release lock and does not validate remo
 ### Pinned repository consistency
 
 `check-release` and every `release` mode inspect committed `.sources.conf` and
-`.sources.lock` files recursively at each selected Git revision. The same
+`.sources.lock` files recursively at each selected Git revision, including its recorded recursive
+submodules. The same
 normalized upstream repository must select the same full commit everywhere,
 regardless of local source aliases or supported URL spellings. Identical repeats
 are visited once. Include the starting repository's HEAD when it has a Git origin,

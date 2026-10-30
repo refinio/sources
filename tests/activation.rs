@@ -1,6 +1,6 @@
 mod common;
 
-use common::{Fixture, success};
+use common::{Fixture, failure, success};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -103,4 +103,45 @@ fn release_activates_recursive_recorded_pins_and_retains_ignored_module_artifact
         std::fs::read_to_string(nested_worktree.join("tracked.txt")).unwrap(),
         "future nested source\n"
     );
+
+    // A direct source cannot select another version of a recursive submodule.
+    let previous_nested = f.git(&nested, &["rev-parse", "HEAD^"]);
+    f.configure(
+        json!({"a": {"url": parent}, "nested-direct": {"url": nested}}),
+        json!({}),
+    );
+    let parent_commit = f.git(&parent, &["rev-parse", "HEAD"]);
+    std::fs::write(
+        f.app.join(".sources.lock"),
+        json!({
+            "version": 2, "sources": {
+                "a": {"git": parent_commit}, "nested-direct": {"git": previous_nested}
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let output = f.cli().arg("check-release").output().unwrap();
+    let diagnostic = String::from_utf8_lossy(&output.stderr).to_string();
+    failure(output, "conflicting pinned versions");
+    assert!(
+        diagnostic.contains("a -> submodule dep -> submodule nested child"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("nested-direct"), "{diagnostic}");
+    assert!(diagnostic.contains(&next_nested), "{diagnostic}");
+    assert!(diagnostic.contains(&previous_nested), "{diagnostic}");
+    assert_eq!(f.git(&nested_worktree, &["rev-parse", "HEAD"]), next_nested);
+    std::fs::write(
+        f.app.join(".sources.lock"),
+        json!({
+            "version": 2, "sources": {
+                "a": {"git": parent_commit}, "nested-direct": {"git": next_nested}
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    success(f.cli().arg("check-release").output().unwrap());
+    success(f.cli().args(["release", "--offline"]).output().unwrap());
 }
